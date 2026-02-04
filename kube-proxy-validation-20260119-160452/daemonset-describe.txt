@@ -1,0 +1,79 @@
+Name:           kube-proxy
+Namespace:      kube-system
+Selector:       k8s-app=kube-proxy
+Node-Selector:  <none>
+Labels:         eks.amazonaws.com/component=kube-proxy
+                k8s-app=kube-proxy
+Annotations:    deprecated.daemonset.template.generation: 5
+Desired Number of Nodes Scheduled: 1
+Current Number of Nodes Scheduled: 1
+Number of Nodes Scheduled with Up-to-date Pods: 1
+Number of Nodes Scheduled with Available Pods: 1
+Number of Nodes Misscheduled: 0
+Pods Status:  1 Running / 0 Waiting / 0 Succeeded / 0 Failed
+Pod Template:
+  Labels:           k8s-app=kube-proxy
+  Annotations:      kubectl.kubernetes.io/restartedAt: 2026-01-19T15:49:45+05:30
+  Service Account:  kube-proxy
+  Containers:
+   kube-proxy:
+    Image:      rootioinc/kube-proxy:v1.33.5-ubuntu-22.04-fips
+    Port:       <none>
+    Host Port:  <none>
+    Command:
+      kube-proxy
+      --v=2
+      --config=/var/lib/kube-proxy-config/config
+      --hostname-override=$(NODE_NAME)
+    Requests:
+      cpu:  100m
+    Environment:
+      NODE_NAME:   (v1:spec.nodeName)
+    Mounts:
+      /lib/modules from lib-modules (ro)
+      /run/xtables.lock from xtables-lock (rw)
+      /sys from sys (rw)
+      /var/lib/kube-proxy-config/ from config (rw)
+      /var/lib/kube-proxy/ from kubeconfig (rw)
+      /var/log from varlog (rw)
+  Volumes:
+   varlog:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/log
+    HostPathType:  
+   xtables-lock:
+    Type:          HostPath (bare host directory volume)
+    Path:          /run/xtables.lock
+    HostPathType:  FileOrCreate
+   lib-modules:
+    Type:          HostPath (bare host directory volume)
+    Path:          /lib/modules
+    HostPathType:  
+   kubeconfig:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      kube-proxy
+    Optional:  false
+   config:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      kube-proxy-config
+    Optional:  false
+   sys:
+    Type:               HostPath (bare host directory volume)
+    Path:               /sys
+    HostPathType:       Directory
+  Priority Class Name:  system-node-critical
+  Node-Selectors:       <none>
+  Tolerations:          op=Exists
+Events:
+  Type    Reason            Age   From                  Message
+  ----    ------            ----  ----                  -------
+  Normal  SuccessfulDelete  54m   daemonset-controller  Deleted pod: kube-proxy-sx5qt
+  Normal  SuccessfulCreate  54m   daemonset-controller  Created pod: kube-proxy-scq8q
+  Normal  SuccessfulDelete  47m   daemonset-controller  Deleted pod: kube-proxy-scq8q
+  Normal  SuccessfulCreate  47m   daemonset-controller  Created pod: kube-proxy-dvnkc
+  Normal  SuccessfulDelete  15m   daemonset-controller  Deleted pod: kube-proxy-dvnkc
+  Normal  SuccessfulCreate  15m   daemonset-controller  Created pod: kube-proxy-5vjgt
+  Normal  SuccessfulCreate  13m   daemonset-controller  Created pod: kube-proxy-4zmh7
+  Normal  SuccessfulDelete  11m   daemonset-controller  Deleted pod: kube-proxy-4zmh7
+  Normal  SuccessfulCreate  11m   daemonset-controller  Created pod: kube-proxy-phsrw
+  Normal  SuccessfulCreate  11m   daemonset-controller  Created pod: kube-proxy-j47bg

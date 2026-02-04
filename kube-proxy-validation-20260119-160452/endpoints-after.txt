@@ -1,0 +1,14 @@
+NAMESPACE              NAME                                     ENDPOINTS                                                            AGE
+default                kubernetes                               10.20.14.54:443,10.20.30.101:443                                     32d
+default                postgresql-fips-hardened-17-7-1          10.20.44.97:5432                                                     6d21h
+default                postgresql-fips-hardened-17-7-1-hl       10.20.44.97:5432                                                     6d21h
+default                test-nginx-svc                           10.20.37.137:80,10.20.43.124:80,10.20.43.30:80                       2m41s
+demo                   hello-world-service                      10.20.40.162:8080                                                    32d
+kube-system            eks-extension-metrics-api                172.0.32.0:10443                                                     32d
+kube-system            kube-dns                                 10.20.40.196:53,10.20.40.92:53,10.20.40.196:53 + 3 more...           32d
+ns-bitnami-fipsified   coredns-fips-hardened-1-13-2             10.20.44.72:53,10.20.44.72:53                                        2d22h
+ns-bitnami-fipsified   metrics-server-fips-hardened-0-8-0       10.20.43.83:8443                                                     2d22h
+ns-bitnami-fipsified   rabbitmq-fips-hardened-3-13-7                                                                                 2d20h
+ns-bitnami-fipsified   rabbitmq-fips-hardened-3-13-7-headless   10.20.38.175:5672,10.20.38.175:15672,10.20.38.175:4369 + 1 more...   2d20h
+ns-bitnami-orginal     coredns                                  10.20.33.230:53,10.20.33.230:53                                      2d22h
+ns-bitnami-orginal     metrics-server-org                       10.20.41.93:8443                                                     2d23h

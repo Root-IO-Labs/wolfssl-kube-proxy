@@ -1,0 +1,14 @@
+NAMESPACE              NAME                                     TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                                 AGE
+default                kubernetes                               ClusterIP   172.20.0.1       <none>        443/TCP                                 32d
+default                postgresql-fips-hardened-17-7-1          ClusterIP   172.20.5.188     <none>        5432/TCP                                6d21h
+default                postgresql-fips-hardened-17-7-1-hl       ClusterIP   None             <none>        5432/TCP                                6d21h
+default                test-nginx-svc                           ClusterIP   172.20.141.78    <none>        80/TCP                                  2m39s
+demo                   hello-world-service                      ClusterIP   172.20.194.186   <none>        80/TCP                                  32d
+kube-system            eks-extension-metrics-api                ClusterIP   172.20.20.201    <none>        443/TCP                                 32d
+kube-system            kube-dns                                 ClusterIP   172.20.0.10      <none>        53/UDP,53/TCP,9153/TCP                  32d
+ns-bitnami-fipsified   coredns-fips-hardened-1-13-2             ClusterIP   172.20.115.41    <none>        53/UDP,53/TCP                           2d22h
+ns-bitnami-fipsified   metrics-server-fips-hardened-0-8-0       ClusterIP   172.20.200.6     <none>        443/TCP                                 2d22h
+ns-bitnami-fipsified   rabbitmq-fips-hardened-3-13-7            ClusterIP   172.20.138.55    <none>        5672/TCP,4369/TCP,25672/TCP,15672/TCP   2d20h
+ns-bitnami-fipsified   rabbitmq-fips-hardened-3-13-7-headless   ClusterIP   None             <none>        4369/TCP,5672/TCP,25672/TCP,15672/TCP   2d20h
+ns-bitnami-orginal     coredns                                  ClusterIP   172.20.186.11    <none>        53/UDP,53/TCP                           2d22h
+ns-bitnami-orginal     metrics-server-org                       ClusterIP   172.20.234.74    <none>        443/TCP                                 2d23h
