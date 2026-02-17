@@ -203,6 +203,7 @@ START_TIME=$(date +%s)
 
 # Run Docker build
 if docker buildx build \
+    --progress plain \
     --secret id=wolfssl_password,src=wolfssl_password.txt \
     -t "${IMAGE_TAG}" \
     ${NO_CACHE} \
