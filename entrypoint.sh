@@ -241,5 +241,10 @@ echo ""
 if [ $# -eq 0 ]; then
     exec /kube-proxy
 else
-    exec "$@"
+    # If first argument starts with -, it's a flag for kube-proxy
+    if [[ "${1}" == -* ]]; then
+        exec /kube-proxy "$@"
+    else
+        exec "$@"
+    fi
 fi

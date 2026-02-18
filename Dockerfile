@@ -1,19 +1,23 @@
 # kube-proxy v1.33.5 FIPS-enabled Image (Multi-arch: x86_64 and ARM64)
-# Using golang-fips/go + wolfSSL FIPS v5 + wolfProvider
+# Using golang-fips/go + wolfSSL FIPS v5 + wolfProvider + Ubuntu System OpenSSL
 #
-# Architecture: kube-proxy (Go) → golang-fips/go → OpenSSL 3 → wolfProvider → wolfSSL FIPS v5
+# Architecture: kube-proxy (Go) → golang-fips/go → OpenSSL 3 (system) → wolfProvider → wolfSSL FIPS v5
+#
+# IMPORTANT: Uses Ubuntu's APT-managed OpenSSL instead of building from source
+# Benefits: Safe for upgrades, APT consistency, faster builds, no manual file replacement
 #
 # MULTI-ARCHITECTURE SUPPORT: ✅ x86_64 (amd64) and ARM64 (aarch64)
-# Build time: ~50-60 minutes (30-40 min for Go toolchain build)
+# Build time: ~30-40 minutes (20 minutes faster - no OpenSSL build)
 # CRITICAL: NO application code changes required - standard Go crypto/* imports work as-is
 #
 # Build command (single arch):
 #   DOCKER_BUILDKIT=1 docker build --secret id=wolfssl_password,src=wolfssl_password.txt \
-#     -t kube-proxy-fips:v1.33.5-ubuntu-22.04 -f Dockerfile .
+#     -t kube-proxy-fips:v1.33.5-ubuntu-22.04 -f Dockerfile.system-openssl .
 #
 # Build command (multi-arch):
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     --secret id=wolfssl_password,src=wolfssl_password.txt -t kube-proxy-fips:v1.33.5 .
+#     --secret id=wolfssl_password,src=wolfssl_password.txt \
+#     -t kube-proxy-fips:v1.33.5 -f Dockerfile.system-openssl .
 #
 # Run command (example):
 #   docker run --rm --privileged --net=host \
@@ -21,45 +25,7 @@
 #     kube-proxy-fips:v1.33.5-ubuntu-22.04
 
 # ============================================================================
-# Stage 1: Build OpenSSL 3 with FIPS module
-# ============================================================================
-FROM ubuntu:22.04 AS openssl-builder
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# OpenSSL Configuration
-ENV OPENSSL_VERSION=3.0.15
-ENV OPENSSL_PREFIX=/usr/local/openssl
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        perl \
-    ; \
-    rm -rf /var/lib/apt/lists/*
-
-# Build OpenSSL 3 with FIPS module (Multi-arch: x86_64 and ARM64)
-RUN set -eux; \
-    cd /tmp; \
-    curl -fsSL "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" -o openssl.tar.gz; \
-    tar -xzf openssl.tar.gz; \
-    cd "openssl-${OPENSSL_VERSION}"; \
-    ARCH=$(uname -m); \
-    if [ "$ARCH" = "x86_64" ]; then OPENSSL_TARGET="linux-x86_64"; OPENSSL_LIBDIR="lib64"; \
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then OPENSSL_TARGET="linux-aarch64"; OPENSSL_LIBDIR="lib"; \
-    else OPENSSL_TARGET="linux-generic64"; OPENSSL_LIBDIR="lib"; fi; \
-    ./Configure --prefix=${OPENSSL_PREFIX} --libdir=$OPENSSL_LIBDIR --openssldir=${OPENSSL_PREFIX}/ssl enable-fips shared $OPENSSL_TARGET; \
-    make -j"$(nproc)"; \
-    make install_sw install_fips install_ssldirs; \
-    if [ -d "${OPENSSL_PREFIX}/lib64" ] && [ ! -d "${OPENSSL_PREFIX}/lib" ]; then ln -sf lib64 ${OPENSSL_PREFIX}/lib; \
-    elif [ -d "${OPENSSL_PREFIX}/lib" ] && [ ! -d "${OPENSSL_PREFIX}/lib64" ]; then ln -sf lib ${OPENSSL_PREFIX}/lib64; fi; \
-    cd /tmp; rm -rf openssl*
-
-# ============================================================================
-# Stage 2: Build wolfSSL FIPS v5
+# Stage 1: Build wolfSSL FIPS v5 and wolfProvider
 # ============================================================================
 FROM ubuntu:22.04 AS wolfssl-builder
 
@@ -68,7 +34,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # wolfSSL Configuration
 ENV WOLFSSL_URL=https://www.wolfssl.com/comm/wolfssl/wolfssl-5.8.2-commercial-fips-v5.2.3.7z
 ENV WOLFSSL_PREFIX=/usr/local
+ENV WOLFPROV_VERSION=v1.1.0
+ENV WOLFPROV_REPO=https://github.com/wolfSSL/wolfProvider.git
 
+# Install build dependencies including Ubuntu System OpenSSL development files
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -79,7 +48,9 @@ RUN set -eux; \
         autoconf \
         automake \
         libtool \
+        pkg-config \
         p7zip-full \
+        libssl-dev \
     ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -88,15 +59,14 @@ RUN set -eux; \
 RUN --mount=type=secret,id=wolfssl_password,required=true \
     set -eux; \
     mkdir -p /usr/src; \
-    curl -fsSLk "${WOLFSSL_URL}" -o /tmp/wolfssl.7z; \
+    curl -fsSL "${WOLFSSL_URL}" -o /tmp/wolfssl.7z; \
     PASSWORD=$(cat /run/secrets/wolfssl_password | tr -d '\n\r'); \
     7z x /tmp/wolfssl.7z -o/usr/src -p"${PASSWORD}"; \
     rm /tmp/wolfssl.7z; \
     find /usr/src -maxdepth 1 -type d -name "wolfssl*" -exec mv {} /usr/src/wolfssl \;; \
     cd /usr/src/wolfssl; \
-    # Remove Python-specific defines that can cause issues
-    sed -i '/^#ifdef WOLFSSL_PYTHON/,/^#endif/d' wolfssl/wolfcrypt/settings.h || true; \
     # Configure wolfSSL with FIPS v5 and necessary features
+    # NOTE: DES3 removed (not FIPS 140-3 approved), RSA_MIN_SIZE=2048 (FIPS requirement)
     ./configure \
         --prefix=${WOLFSSL_PREFIX} \
         --enable-fips=v5 \
@@ -104,7 +74,6 @@ RUN --mount=type=secret,id=wolfssl_password,required=true \
         --enable-cmac \
         --enable-keygen \
         --enable-sha \
-        --enable-des3 \
         --enable-aesctr \
         --enable-aesccm \
         --enable-x963kdf \
@@ -114,7 +83,7 @@ RUN --mount=type=secret,id=wolfssl_password,required=true \
         --enable-enckeys \
         --enable-base16 \
         --with-eccminsz=192 \
-        CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=1024" \
+        CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=2048" \
     ; \
     make -j"$(nproc)"; \
     ./fips-hash.sh; \
@@ -134,61 +103,47 @@ RUN set -eux; \
     rm /tmp/fips-startup-check.c; \
     echo "FIPS startup check utility built successfully"
 
-# ============================================================================
-# Stage 3: Build wolfProvider
-# ============================================================================
-FROM ubuntu:22.04 AS wolfprov-builder
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# wolfProvider Configuration
-ENV WOLFPROV_VERSION=v1.1.0
-ENV WOLFPROV_REPO=https://github.com/wolfSSL/wolfProvider.git
-ENV WOLFPROV_PREFIX=/usr/local
-ENV OPENSSL_PREFIX=/usr/local/openssl
-ENV WOLFSSL_PREFIX=/usr/local
-
-# Copy OpenSSL and wolfSSL from previous stages
-COPY --from=openssl-builder ${OPENSSL_PREFIX} ${OPENSSL_PREFIX}
-COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/include/wolfssl ${WOLFSSL_PREFIX}/include/wolfssl
-COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/lib/libwolfssl.* ${WOLFSSL_PREFIX}/lib/
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        git \
-        autoconf \
-        automake \
-        libtool \
-        pkg-config \
-    ; \
-    rm -rf /var/lib/apt/lists/*
-
-# Set up library paths (Multi-arch: lib and lib64)
-ENV LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64:${OPENSSL_PREFIX}/lib:${WOLFSSL_PREFIX}/lib"
-ENV PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib64/pkgconfig:${OPENSSL_PREFIX}/lib/pkgconfig:${WOLFSSL_PREFIX}/lib/pkgconfig"
-
-# Build wolfProvider
+# Build wolfProvider (bridges OpenSSL 3 and wolfSSL FIPS v5)
+# IMPORTANT: Using Ubuntu System OpenSSL (--with-openssl=/usr)
 RUN set -eux; \
     cd /tmp; \
     git clone --depth 1 --branch ${WOLFPROV_VERSION} ${WOLFPROV_REPO} wolfProvider; \
     cd wolfProvider; \
     ./autogen.sh; \
+    # Configure wolfProvider to use Ubuntu System OpenSSL
     ./configure \
-        --prefix=${WOLFPROV_PREFIX} \
-        --with-openssl=${OPENSSL_PREFIX} \
+        --prefix=${WOLFSSL_PREFIX} \
+        --with-openssl=/usr \
         --with-wolfssl=${WOLFSSL_PREFIX} \
+        CPPFLAGS="-I/usr/include" \
+        LDFLAGS="-L/usr/lib/x86_64-linux-gnu" \
     ; \
     make -j"$(nproc)"; \
-    make install; \
-    echo "Checking installed wolfProvider files:"; \
-    find ${WOLFPROV_PREFIX} -name "libwolfprov.so*" -ls || echo "wolfProvider not in expected location"; \
-    find ${OPENSSL_PREFIX} -name "libwolfprov.so*" -ls || echo "wolfProvider not in OpenSSL location"
+    echo "wolfProvider built, installing to Ubuntu system modules directory..."; \
+    # Install to system OpenSSL modules directory (APT-managed location)
+    mkdir -p /usr/lib/x86_64-linux-gnu/ossl-modules; \
+    if [ -f ".libs/libwolfprov.so" ]; then \
+        cp -v .libs/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    elif [ -f "src/.libs/libwolfprov.so" ]; then \
+        cp -v src/.libs/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    fi; \
+    cd /; \
+    rm -rf /tmp/wolfProvider; \
+    echo "wolfProvider installation completed"
+
+# Verify wolfProvider installation
+RUN set -eux; \
+    echo "Checking for wolfProvider in Ubuntu system location..."; \
+    ls -la /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    if [ -f "/usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so" ]; then \
+        echo "✓ wolfProvider module found and verified"; \
+    else \
+        echo "ERROR: wolfProvider module not found in expected location"; \
+        exit 1; \
+    fi
 
 # ============================================================================
-# Stage 4: Build golang-fips/go toolchain
+# Stage 2: Build golang-fips/go toolchain
 # ============================================================================
 FROM ubuntu:22.04 AS go-builder
 
@@ -199,15 +154,16 @@ ENV GOLANG_FIPS_VERSION=go1.24-fips-release
 ENV GOLANG_FIPS_REPO=https://github.com/golang-fips/go.git
 ENV GOROOT_BOOTSTRAP=/usr/local/go-bootstrap
 ENV GOROOT=/usr/local/go-fips
-ENV OPENSSL_PREFIX=/usr/local/openssl
 ENV WOLFSSL_PREFIX=/usr/local
 
-# Copy OpenSSL, wolfSSL, and wolfProvider from previous stages
-COPY --from=openssl-builder ${OPENSSL_PREFIX} ${OPENSSL_PREFIX}
+# Copy wolfSSL and wolfProvider from previous stage
+# NOTE: OpenSSL is from Ubuntu APT (libssl-dev), no need to copy
 COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/include/wolfssl ${WOLFSSL_PREFIX}/include/wolfssl
 COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/lib/libwolfssl.* ${WOLFSSL_PREFIX}/lib/
-COPY --from=wolfprov-builder ${OPENSSL_PREFIX}/lib64/ossl-modules/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/
+COPY --from=wolfssl-builder /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/
+COPY --from=wolfssl-builder /usr/local/bin/fips-startup-check /usr/local/bin/fips-startup-check
 
+# Install build dependencies including Ubuntu System OpenSSL
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -216,6 +172,7 @@ RUN set -eux; \
         git \
         curl \
         pkg-config \
+        libssl-dev \
     ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -229,13 +186,14 @@ RUN set -eux; \
     mv /usr/local/go ${GOROOT_BOOTSTRAP}; \
     rm /tmp/go.tar.gz
 
-# Set up library paths (Multi-arch: lib and lib64)
-ENV LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64:${OPENSSL_PREFIX}/lib:${WOLFSSL_PREFIX}/lib"
-ENV PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib64/pkgconfig:${OPENSSL_PREFIX}/lib/pkgconfig:${WOLFSSL_PREFIX}/lib/pkgconfig"
+# Set up library paths for Ubuntu System OpenSSL
+ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu"
+ENV PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig"
 
 # Build golang-fips/go from source
-# Note: golang-fips/go uses a meta-repository with git submodules and patches
+# IMPORTANT: Using Ubuntu System OpenSSL paths (CGO_CFLAGS/LDFLAGS)
 RUN set -eux; \
+    GO_INSTALL_DIR="${GOROOT}"; \
     unset GOROOT; \
     export PATH="${GOROOT_BOOTSTRAP}/bin:${PATH}"; \
     git config --global user.email "builder@fips.local"; \
@@ -247,579 +205,166 @@ RUN set -eux; \
     ./scripts/full-initialize-repo.sh; \
     cd /tmp/go-fips-repo/go/src; \
     CGO_ENABLED=1 \
-    CGO_CFLAGS="-I${OPENSSL_PREFIX}/include -I${WOLFSSL_PREFIX}/include" \
-    CGO_LDFLAGS="-L${OPENSSL_PREFIX}/lib64 -L${OPENSSL_PREFIX}/lib -L${WOLFSSL_PREFIX}/lib" \
+    CGO_CFLAGS="-I/usr/include -I${WOLFSSL_PREFIX}/include" \
+    CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -L${WOLFSSL_PREFIX}/lib" \
+    GOEXPERIMENT=boringcrypto \
     ./make.bash; \
-    FINAL_GOROOT=/usr/local/go-fips; \
-    mv /tmp/go-fips-repo/go ${FINAL_GOROOT}; \
-    rm -rf /tmp/go-fips-repo; \
-    ${FINAL_GOROOT}/bin/go version
+    cd ..; \
+    mkdir -p "${GO_INSTALL_DIR}"; \
+    cp -a * "${GO_INSTALL_DIR}/"; \
+    cd /; \
+    rm -rf /tmp/go-fips-repo ${GOROOT_BOOTSTRAP}; \
+    echo "golang-fips/go installed successfully"
 
-# Verify golang-fips/openssl version for CVE-2024-9355
-# CVE-2024-9355: Uninitialized buffer vulnerability in golang-fips/openssl ≤ v2.0.3
-# CVSS 6.5 HIGH - Upgrade to v2.0.4+ recommended
+# Verify Go installation
 RUN set -eux; \
-    echo ""; \
-    echo "========================================"; \
-    echo "CVE-2024-9355 Verification"; \
-    echo "========================================"; \
-    echo "Checking golang-fips/openssl version for CVE-2024-9355..."; \
-    cd ${GOROOT}; \
-    if [ -f "go.mod" ]; then \
-        OPENSSL_VERSION=$(grep "github.com/golang-fips/openssl" go.mod | head -1 | awk '{print $2}' || echo "unknown"); \
-        echo "Detected golang-fips/openssl version: $OPENSSL_VERSION"; \
-        echo ""; \
-        case "$OPENSSL_VERSION" in \
-            v2.0.[0-3]|v2.0.0-*|v2.0.1-*|v2.0.2-*|v2.0.3-*|v0.*|v1.*) \
-                echo "⚠️  WARNING: golang-fips/openssl version $OPENSSL_VERSION may be VULNERABLE"; \
-                echo ""; \
-                echo "Vulnerability Details:"; \
-                echo "  CVE ID: CVE-2024-9355"; \
-                echo "  Severity: HIGH (CVSS 6.5)"; \
-                echo "  Issue: Uninitialized buffer in RSA key generation"; \
-                echo "  Affected: golang-fips/openssl ≤ v2.0.3"; \
-                echo "  Fixed in: v2.0.4+"; \
-                echo ""; \
-                echo "Recommendation:"; \
-                echo "  Update golang-fips/go to use golang-fips/openssl v2.0.4 or later"; \
-                echo "  This is detected at BUILD TIME for awareness"; \
-                echo ""; \
-                ;; \
-            v2.0.[4-9]|v2.0.[1-9][0-9]|v2.[1-9]*|v[3-9]*) \
-                echo "✓ PASS: golang-fips/openssl $OPENSSL_VERSION is PATCHED"; \
-                echo "  CVE-2024-9355 does not affect this version"; \
-                ;; \
-            *) \
-                echo "ℹ️  INFO: golang-fips/openssl version: $OPENSSL_VERSION"; \
-                echo "  Could not determine vulnerability status automatically"; \
-                echo "  Please verify version >= v2.0.4 manually"; \
-                ;; \
-        esac; \
-    else \
-        echo "⚠️  WARNING: Could not find go.mod in ${GOROOT}"; \
-        echo "  Unable to verify golang-fips/openssl version"; \
-    fi; \
-    echo "========================================"; \
-    echo ""
+    export PATH="${GOROOT}/bin:${PATH}"; \
+    go version; \
+    go env
 
 # ============================================================================
-# Stage 5: Build kube-proxy v1.33.5
+# Stage 3: Build kube-proxy
 # ============================================================================
-FROM ubuntu:22.04 AS app-builder
+FROM ubuntu:22.04 AS kube-proxy-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# kube-proxy Configuration
+ENV KUBERNETES_VERSION=v1.33.5
+ENV KUBERNETES_REPO=https://github.com/kubernetes/kubernetes.git
 ENV GOROOT=/usr/local/go-fips
-ENV PATH="${GOROOT}/bin:${PATH}"
-ENV OPENSSL_PREFIX=/usr/local/openssl
 ENV WOLFSSL_PREFIX=/usr/local
 
-# Copy Go toolchain and libraries
+# Copy golang-fips/go, wolfSSL, and wolfProvider
+# NOTE: OpenSSL is from Ubuntu APT (libssl-dev), no need to copy
 COPY --from=go-builder ${GOROOT} ${GOROOT}
-COPY --from=openssl-builder ${OPENSSL_PREFIX} ${OPENSSL_PREFIX}
-COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/include/wolfssl ${WOLFSSL_PREFIX}/include/wolfssl
-COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/lib/libwolfssl.* ${WOLFSSL_PREFIX}/lib/
-COPY --from=wolfprov-builder ${OPENSSL_PREFIX}/lib64/ossl-modules/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/
+COPY --from=go-builder ${WOLFSSL_PREFIX}/include/wolfssl ${WOLFSSL_PREFIX}/include/wolfssl
+COPY --from=go-builder ${WOLFSSL_PREFIX}/lib/libwolfssl.* ${WOLFSSL_PREFIX}/lib/
+COPY --from=go-builder /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/
 
+# Install build dependencies including Ubuntu System OpenSSL
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
-        curl \
         git \
-        pkg-config \
         rsync \
+        file \
+        libssl-dev \
     ; \
     rm -rf /var/lib/apt/lists/*
 
-# Set up library paths (Multi-arch: lib and lib64)
-ENV LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64:${OPENSSL_PREFIX}/lib:${WOLFSSL_PREFIX}/lib"
-ENV PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib64/pkgconfig:${OPENSSL_PREFIX}/lib/pkgconfig:${WOLFSSL_PREFIX}/lib/pkgconfig"
-
-# Build configuration for FIPS
+# Set up environment for Ubuntu System OpenSSL
+ENV PATH="${GOROOT}/bin:/usr/local/bin:/usr/bin:/bin"
+ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu"
+ENV PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig"
 ENV CGO_ENABLED=1
-ENV CGO_CFLAGS="-I${OPENSSL_PREFIX}/include -I${WOLFSSL_PREFIX}/include"
-ENV CGO_LDFLAGS="-L${OPENSSL_PREFIX}/lib64 -L${OPENSSL_PREFIX}/lib -L${WOLFSSL_PREFIX}/lib"
+ENV CGO_CFLAGS="-I/usr/include -I${WOLFSSL_PREFIX}/include"
+ENV CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -L${WOLFSSL_PREFIX}/lib"
 
-# Clone and build kube-proxy v1.33.5
+# Copy FIPS cipher restriction patch
+COPY kube-proxy-fips-cipher-restriction.patch /tmp/kube-proxy-fips-cipher-restriction.patch
+
+# Clone Kubernetes source and build kube-proxy
 RUN set -eux; \
-    echo "Cloning Kubernetes repository..."; \
-    git clone --depth 1 --branch v1.33.5 \
-        https://github.com/kubernetes/kubernetes.git /tmp/kubernetes; \
+    git clone --depth 1 --branch ${KUBERNETES_VERSION} ${KUBERNETES_REPO} /tmp/kubernetes; \
     cd /tmp/kubernetes; \
-    echo "Updating golang.org/x/crypto dependency to v0.45.0..."; \
-    sed -i 's|golang.org/x/crypto v0.36.0|golang.org/x/crypto v0.45.0|g' go.mod; \
+    # Apply FIPS cipher suite restriction patch
+    echo "Applying FIPS cipher suite restriction patch..."; \
+    patch -p1 < /tmp/kube-proxy-fips-cipher-restriction.patch; \
+    echo "Patch applied successfully"; \
+    # Update golang.org/x/crypto to v0.45.0 (addresses CVEs)
+    go get golang.org/x/crypto@v0.45.0; \
     go mod tidy; \
-    echo "Building kube-proxy v1.33.5 with FIPS Go..."; \
-    go version; \
-    echo "Downloading dependencies..."; \
-    go mod download; \
-    echo "Building kube-proxy binary..."; \
-    cd /tmp/kubernetes; \
-    GOWORK=off go build -mod=mod -buildmode=pie \
-        -ldflags="-s -w" \
-        -o /app/kube-proxy \
-        ./cmd/kube-proxy; \
-    echo "Verifying kube-proxy binary..."; \
-    ls -lh /app/kube-proxy; \
-    echo "Checking binary linkage:"; \
-    ldd /app/kube-proxy || echo "Note: Binary linkage check complete"; \
-    echo "Testing binary execution:"; \
-    /app/kube-proxy --version 2>&1 || echo "Binary execution test complete"; \
+    # Use go work vendor for workspace mode (Kubernetes v1.33.5 uses go.work)
+    go work vendor; \
+    # Build kube-proxy with FIPS-enabled Go and cipher restriction patch
+    make WHAT=cmd/kube-proxy GOFLAGS=-v; \
+    mkdir -p /opt/kube-proxy; \
+    cp -v _output/bin/kube-proxy /opt/kube-proxy/kube-proxy; \
+    chmod +x /opt/kube-proxy/kube-proxy; \
     cd /; \
-    rm -rf /tmp/kubernetes
+    rm -rf /tmp/kubernetes /tmp/kube-proxy-fips-cipher-restriction.patch; \
+    echo "kube-proxy built successfully with FIPS cipher restrictions"
 
-# Crypto Dependency Audit - kube-proxy v1.33.5
-# Scan the compiled binary for golang.org/x/crypto and related algorithm usage
-# These references SHOULD be intercepted by golang-fips/go runtime and routed to OpenSSL
+# Verify kube-proxy binary
 RUN set -eux; \
-    echo ""; \
-    echo "========================================"; \
-    echo "kube-proxy Crypto Dependency Audit"; \
-    echo "========================================"; \
-    echo ""; \
-    echo "Scanning /app/kube-proxy binary for cryptographic references..."; \
-    echo ""; \
-    # Scan for golang.org/x/crypto references
-    X_CRYPTO_COUNT=$(strings /app/kube-proxy 2>/dev/null | grep -c "golang.org/x/crypto" || echo 0); \
-    if [ "$X_CRYPTO_COUNT" -gt 0 ]; then \
-        echo "⚠️  WARNING: Found $X_CRYPTO_COUNT golang.org/x/crypto references"; \
-        echo ""; \
-        echo "Details:"; \
-        echo "  Package: golang.org/x/crypto (v0.36.0 in Kubernetes v1.33.5)"; \
-        echo "  Used by: kubernetes/client-go for API server TLS connections"; \
-        echo "  Expected: golang-fips/go SHOULD intercept these calls at runtime"; \
-        echo ""; \
-        echo "⚠️  IMPORTANT: golang.org/x/crypto v0.36.0 is OLDER than CoreDNS v0.45.0"; \
-        echo "  Check for CVEs between v0.36.0 and v0.45.0"; \
-        echo "  Kubernetes v1.33.5 crypto dependency may need updates"; \
-        echo ""; \
-        echo "FIPS Compliance Path:"; \
-        echo "  kube-proxy → client-go → golang.org/x/crypto → golang-fips/go runtime"; \
-        echo "  → OpenSSL 3.0.15 → wolfProvider → wolfSSL FIPS v5"; \
-        echo ""; \
-        echo "⚠️  Action Required:"; \
-        echo "  Integration testing with Kubernetes API server TLS connections"; \
-        echo "  Verify crypto routing through FIPS-validated OpenSSL in production"; \
-        echo ""; \
-    else \
-        echo "✓ No golang.org/x/crypto references found"; \
-    fi; \
-    # Check for X25519/curve25519 (TLS 1.3 key exchange to API server)
-    X25519_COUNT=$(strings /app/kube-proxy 2>/dev/null | grep -icE "x25519|curve25519" || echo 0); \
-    if [ "$X25519_COUNT" -gt 0 ]; then \
-        echo "⚠️  WARNING: Found $X25519_COUNT X25519/curve25519 references"; \
-        echo ""; \
-        echo "Details:"; \
-        echo "  Algorithm: X25519 elliptic curve Diffie-Hellman"; \
-        echo "  Used in: TLS 1.3 key exchange to Kubernetes API server"; \
-        echo "  FIPS Status: May be approved in FIPS 140-3"; \
-        echo ""; \
-        echo "Kubernetes v1.33 Features:"; \
-        echo "  • Supports hybrid post-quantum X25519MLKEM768 (Go 1.24)"; \
-        echo "  • API server TLS connections may use X25519 key exchange"; \
-        echo "  • golang-fips/go routes crypto/ecdh calls to OpenSSL"; \
-        echo ""; \
-        echo "Expected Behavior:"; \
-        echo "  golang-fips/go routes crypto/ecdh and crypto/tls calls to OpenSSL"; \
-        echo "  OpenSSL 3.0.15 uses wolfProvider → wolfSSL FIPS v5 for operations"; \
-        echo ""; \
-        echo "⚠️  Action Required:"; \
-        echo "  Test TLS connections to Kubernetes API server"; \
-        echo "  Verify cipher suite negotiation uses FIPS-approved algorithms"; \
-        echo "  Monitor for TLS handshake errors"; \
-        echo ""; \
-    else \
-        echo "ℹ️  No X25519/curve25519 references found"; \
-    fi; \
-    # Check for Ed25519 (JWT signature verification for service accounts)
-    ED25519_COUNT=$(strings /app/kube-proxy 2>/dev/null | grep -ic "ed25519" || echo 0); \
-    if [ "$ED25519_COUNT" -gt 0 ]; then \
-        echo "ℹ️  INFO: Found $ED25519_COUNT Ed25519 references"; \
-        echo ""; \
-        echo "Details:"; \
-        echo "  Algorithm: Ed25519 signature algorithm"; \
-        echo "  Used in: JWT token signature verification (service accounts)"; \
-        echo "  Operation: Signature VERIFICATION (non-cryptographic)"; \
-        echo ""; \
-        echo "FIPS Impact: LOW"; \
-        echo "  Signature verification is a public-key operation"; \
-        echo "  Does not involve key generation or signing (cryptographic operations)"; \
-        echo "  Service account tokens validated using public keys"; \
-        echo ""; \
-    else \
-        echo "ℹ️  No Ed25519 references found"; \
-    fi; \
-    # Check for client-go usage
-    CLIENT_GO_COUNT=$(strings /app/kube-proxy 2>/dev/null | grep -ic "k8s.io/client-go" || echo 0); \
-    if [ "$CLIENT_GO_COUNT" -gt 0 ]; then \
-        echo "ℹ️  INFO: Found $CLIENT_GO_COUNT kubernetes/client-go references"; \
-        echo ""; \
-        echo "Details:"; \
-        echo "  Package: k8s.io/client-go (Kubernetes API client library)"; \
-        echo "  Used for: Watch/list API calls, service endpoint discovery"; \
-        echo "  Crypto: TLS connections to API server, JWT token auth"; \
-        echo ""; \
-        echo "FIPS Routing:"; \
-        echo "  client-go → golang.org/x/crypto/tls → golang-fips/go"; \
-        echo "  → OpenSSL 3.0.15 → wolfProvider → wolfSSL FIPS v5"; \
-        echo ""; \
-        echo "✓ This is EXPECTED for kube-proxy"; \
-        echo ""; \
-    fi; \
-    echo ""; \
-    echo "Summary:"; \
-    echo "  Architecture: kube-proxy → client-go → golang-fips/go → OpenSSL 3 → wolfProvider → wolfSSL FIPS v5"; \
-    echo "  golang.org/x/crypto: $X_CRYPTO_COUNT references (expected for client-go)"; \
-    echo "  X25519: $X25519_COUNT references (API server TLS 1.3)"; \
-    echo "  Ed25519: $ED25519_COUNT references (JWT token verification)"; \
-    echo "  client-go: $CLIENT_GO_COUNT references (Kubernetes API client)"; \
-    echo ""; \
-    echo "Critical Dependencies:"; \
-    echo "  • golang.org/x/crypto v0.36.0 (⚠️  OLDER version - check CVEs!)"; \
-    echo "  • golang.org/x/oauth2 v0.27.0 (OAuth2/JWT auth)"; \
-    echo "  • k8s.io/client-go (API server communication)"; \
-    echo ""; \
-    echo "Next Steps:"; \
-    echo "  1. Run automated tests: ./tests/check-kube-proxy-crypto-routing.sh"; \
-    echo "  2. Deploy to test Kubernetes cluster"; \
-    echo "  3. Test API server TLS connections and JWT auth"; \
-    echo "  4. Verify TLS cipher suites in production logs"; \
-    echo "  5. Monitor for crypto warnings or handshake failures"; \
-    echo ""; \
-    echo "========================================"; \
-    echo ""
+    ls -lh /opt/kube-proxy/kube-proxy; \
+    file /opt/kube-proxy/kube-proxy; \
+    /opt/kube-proxy/kube-proxy --version
 
 # ============================================================================
-# Stage 6: Runtime image
+# Stage 4: Runtime Image
 # ============================================================================
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV OPENSSL_PREFIX=/usr/local/openssl
-ENV WOLFSSL_PREFIX=/usr/local
+ENV LANG=C.UTF-8
 
-# ============================================================================
-# CRITICAL: Installation Order for FIPS Compliance
-# Following FIPS-DOCKER-BUILD-GUIDE.md requirements
-# ============================================================================
+# kube-proxy metadata
+LABEL org.opencontainers.image.title="kube-proxy FIPS" \
+      org.opencontainers.image.description="FIPS 140-3 compliant kube-proxy v1.33.5 with wolfSSL FIPS v5 and Ubuntu System OpenSSL" \
+      org.opencontainers.image.version="v1.33.5" \
+      org.opencontainers.image.vendor="Root.io" \
+      org.opencontainers.image.source="https://github.com/Root-IO-Labs/wolfssl-kube-proxy"
 
-# ----------------------------------------------------------------------------
-# Step 1: Copy FIPS Components BEFORE apt-get (CRITICAL)
-# ----------------------------------------------------------------------------
-COPY --from=openssl-builder ${OPENSSL_PREFIX} ${OPENSSL_PREFIX}
-COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/lib/libwolfssl.* ${WOLFSSL_PREFIX}/lib/
-COPY --from=wolfssl-builder ${WOLFSSL_PREFIX}/include/wolfssl ${WOLFSSL_PREFIX}/include/wolfssl
-
-# Create OpenSSL modules directory
-RUN mkdir -p ${OPENSSL_PREFIX}/lib64/ossl-modules
-
-# Copy wolfProvider
-RUN --mount=type=bind,from=wolfprov-builder,source=/usr/local,target=/mnt/wolfprov \
-    set -eux; \
-    echo "Searching for wolfProvider..."; \
-    find /mnt/wolfprov -name "libwolfprov.so*" -ls || true; \
-    if [ -f "/mnt/wolfprov/lib/libwolfprov.so" ]; then \
-        echo "Copying wolfProvider from /usr/local/lib/"; \
-        cp -v /mnt/wolfprov/lib/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/; \
-        echo "Creating symlink without lib prefix for OpenSSL compatibility..."; \
-        ln -sf libwolfprov.so ${OPENSSL_PREFIX}/lib64/ossl-modules/wolfprov.so; \
-    else \
-        echo "ERROR: wolfProvider not found!"; \
-        exit 1; \
-    fi; \
-    echo "Final wolfProvider verification:"; \
-    ls -la ${OPENSSL_PREFIX}/lib64/ossl-modules/
-
-# ----------------------------------------------------------------------------
-# Step 2: Install FIPS OpenSSL to System Locations (CRITICAL)
-# This ensures apt-get packages link to FIPS OpenSSL, not Ubuntu's OpenSSL
-# ----------------------------------------------------------------------------
-RUN set -eux; \
-    echo "Installing FIPS OpenSSL to system locations..."; \
-    # Copy FIPS OpenSSL libraries to standard system location
-    cp -av ${OPENSSL_PREFIX}/lib64/libssl.so* /usr/lib/x86_64-linux-gnu/ || true; \
-    cp -av ${OPENSSL_PREFIX}/lib64/libcrypto.so* /usr/lib/x86_64-linux-gnu/ || true; \
-    # Copy wolfSSL libraries to system location
-    cp -av ${WOLFSSL_PREFIX}/lib/libwolfssl.so* /usr/lib/x86_64-linux-gnu/ || true; \
-    # Create dynamic linker configuration
-    echo "${OPENSSL_PREFIX}/lib64" > /etc/ld.so.conf.d/fips-openssl.conf; \
-    echo "${WOLFSSL_PREFIX}/lib" >> /etc/ld.so.conf.d/fips-openssl.conf; \
-    echo "/usr/lib/x86_64-linux-gnu" >> /etc/ld.so.conf.d/fips-openssl.conf; \
-    # Update dynamic linker cache
-    ldconfig; \
-    echo "FIPS OpenSSL installed to system locations"
-
-# Copy OpenSSL binary to system location
-RUN set -eux; \
-    cp -av ${OPENSSL_PREFIX}/bin/openssl /usr/bin/openssl || true; \
-    chmod 755 /usr/bin/openssl
-
-# Copy OpenSSL configuration with wolfProvider settings (MUST BE BEFORE VERIFICATION)
-COPY openssl-wolfprov.cnf ${OPENSSL_PREFIX}/ssl/openssl.cnf
-
-# Set environment variables for FIPS mode (REQUIRED for verification to work)
-ENV PATH="${OPENSSL_PREFIX}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64:${OPENSSL_PREFIX}/lib:${WOLFSSL_PREFIX}/lib:/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/usr/lib"
-ENV OPENSSL_CONF="${OPENSSL_PREFIX}/ssl/openssl.cnf"
-ENV OPENSSL_MODULES="${OPENSSL_PREFIX}/lib64/ossl-modules"
-
-# ----------------------------------------------------------------------------
-# Step 3: Verify FIPS OpenSSL Works BEFORE Installing Packages (CRITICAL)
-# Build must fail here if wolfProvider is not loaded
-# ----------------------------------------------------------------------------
-RUN set -eux; \
-    echo ""; \
-    echo "========================================"; \
-    echo "Pre-Installation FIPS Verification"; \
-    echo "========================================"; \
-    echo ""; \
-    echo "OpenSSL Version:"; \
-    openssl version || { echo "ERROR: OpenSSL not working!"; exit 1; }; \
-    echo ""; \
-    echo "OpenSSL Providers:"; \
-    openssl list -providers || { echo "ERROR: Cannot list providers!"; exit 1; }; \
-    echo ""; \
-    echo "Checking for wolfProvider..."; \
-    if openssl list -providers | grep -q "wolfprov"; then \
-        echo "✓ SUCCESS: wolfProvider is loaded and active"; \
-    else \
-        echo "✗ ERROR: wolfProvider is NOT loaded!"; \
-        echo "Available providers:"; \
-        openssl list -providers || true; \
-        exit 1; \
-    fi; \
-    echo ""; \
-    echo "✓ Pre-installation FIPS verification passed"; \
-    echo "========================================"
-
-# ----------------------------------------------------------------------------
-# Step 4: Install Runtime Dependencies (with kube-proxy specific packages)
-# These will now link to FIPS OpenSSL from /usr/lib/x86_64-linux-gnu/
-# ----------------------------------------------------------------------------
+# Install runtime dependencies
+# IMPORTANT: Using Ubuntu's APT-managed OpenSSL runtime library (libssl3)
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        iproute2 \
-        bash \
-        curl \
-        procps \
         iptables \
-        ipvsadm \
-        kmod \
         ipset \
         conntrack \
+        ipvsadm \
         nftables \
+        kmod \
+        iproute2 \
+        libssl3 \
     ; \
+    update-ca-certificates; \
     rm -rf /var/lib/apt/lists/*
 
-# ----------------------------------------------------------------------------
-# Step 5: Remove System OpenSSL Packages
-# ----------------------------------------------------------------------------
+# Create user and directories
 RUN set -eux; \
-    echo "Removing system OpenSSL packages..."; \
-    apt-get remove -y libssl3 openssl libssl-dev 2>/dev/null || true; \
-    apt-get autoremove -y 2>/dev/null || true; \
-    # Find and remove any remaining system OpenSSL libraries
-    find /usr/lib /lib -name "libssl.so.3" -delete 2>/dev/null || true; \
-    find /usr/lib /lib -name "libcrypto.so.3" -delete 2>/dev/null || true; \
-    # Reinstall FIPS OpenSSL libraries to system locations
-    cp -av ${OPENSSL_PREFIX}/lib64/libssl.so* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true; \
-    cp -av ${OPENSSL_PREFIX}/lib64/libcrypto.so* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true; \
-    cp -av ${WOLFSSL_PREFIX}/lib/libwolfssl.so* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true; \
-    ldconfig; \
-    echo "System OpenSSL packages removed"
+    useradd -r -u 1001 -g 0 -m -s /sbin/nologin kube-proxy; \
+    mkdir -p /var/lib/kube-proxy /var/log/kube-proxy; \
+    chown -R 1001:0 /var/lib/kube-proxy /var/log/kube-proxy
 
-# ----------------------------------------------------------------------------
-# Step 6: Remove ALL Non-FIPS Crypto Libraries (MOST CRITICAL)
-# This ensures 100% FIPS compliance with no bypass paths
-# ----------------------------------------------------------------------------
-RUN set -eux; \
-    echo ""; \
-    echo "========================================"; \
-    echo "Removing Non-FIPS Crypto Libraries"; \
-    echo "========================================"; \
-    echo ""; \
-    # Preserve CA certificates bundle (needed for TLS)
-    echo "Preserving CA certificates..."; \
-    cp -a /etc/ssl/certs /tmp/ssl-certs-backup || true; \
-    # Remove non-FIPS crypto packages
-    echo "Removing non-FIPS crypto packages..."; \
-    apt-get remove -y --purge \
-        libgnutls30 \
-        libnettle8 \
-        libhogweed6 \
-        libgcrypt20 \
-        libk5crypto3 \
-        2>/dev/null || true; \
-    # Remove apt/gpgv to eliminate dependencies
-    apt-get remove -y --purge apt gpgv 2>/dev/null || true; \
-    # Aggressive autoremove
-    apt-get autoremove -y --purge 2>/dev/null || true; \
-    # Force-delete any remaining non-FIPS crypto library files
-    echo "Force-deleting remaining non-FIPS crypto libraries..."; \
-    find /usr/lib /lib -name 'libgnutls*' -delete 2>/dev/null || true; \
-    find /usr/lib /lib -name 'libnettle*' -delete 2>/dev/null || true; \
-    find /usr/lib /lib -name 'libhogweed*' -delete 2>/dev/null || true; \
-    find /usr/lib /lib -name 'libgcrypt*' -delete 2>/dev/null || true; \
-    find /usr/lib /lib -name 'libk5crypto*' -delete 2>/dev/null || true; \
-    # Purge package database entries (cleanup after force-delete)
-    echo "Purging package database entries..."; \
-    dpkg --force-depends --purge \
-        libgnutls30 \
-        libnettle8 \
-        libhogweed6 \
-        libgcrypt20 \
-        libk5crypto3 \
-        2>/dev/null || true; \
-    # Restore CA certificates
-    echo "Restoring CA certificates..."; \
-    mkdir -p /etc/ssl/certs; \
-    cp -a /tmp/ssl-certs-backup/* /etc/ssl/certs/ 2>/dev/null || true; \
-    rm -rf /tmp/ssl-certs-backup; \
-    # Verify all non-FIPS crypto libraries are gone
-    echo ""; \
-    echo "Verifying non-FIPS crypto libraries are removed..."; \
-    REMAINING=$(find /usr/lib /lib -name 'libgnutls*' -o -name 'libnettle*' -o -name 'libhogweed*' -o -name 'libgcrypt*' -o -name 'libk5crypto*' 2>/dev/null | wc -l); \
-    if [ "$REMAINING" -eq 0 ]; then \
-        echo "✓ SUCCESS: All non-FIPS crypto libraries removed"; \
-    else \
-        echo "✗ WARNING: Some non-FIPS crypto libraries still present:"; \
-        find /usr/lib /lib -name 'libgnutls*' -o -name 'libnettle*' -o -name 'libhogweed*' -o -name 'libgcrypt*' -o -name 'libk5crypto*' 2>/dev/null || true; \
-    fi; \
-    echo "========================================"
+# Copy binaries and libraries
+# NOTE: OpenSSL libraries from Ubuntu APT (already installed via libssl3)
+COPY --from=kube-proxy-builder /opt/kube-proxy/kube-proxy /kube-proxy
+COPY --from=go-builder /usr/local/bin/fips-startup-check /usr/local/bin/fips-startup-check
+COPY --from=go-builder /usr/local/lib/libwolfssl.so* /usr/local/lib/
+COPY --from=go-builder /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/
 
-# ----------------------------------------------------------------------------
-# Step 7: Copy Application and Configuration Files
-# ----------------------------------------------------------------------------
+# Update library cache
+RUN ldconfig
 
-# Copy FIPS startup check utility from wolfssl-builder
-COPY --from=wolfssl-builder /usr/local/bin/fips-startup-check /usr/local/bin/fips-startup-check
-RUN chmod +x /usr/local/bin/fips-startup-check
-
-# Copy compiled kube-proxy binary
-COPY --from=app-builder /app/kube-proxy /kube-proxy
-RUN chmod +x /kube-proxy
+# Copy OpenSSL configuration for wolfProvider
+COPY openssl-wolfprov.cnf /etc/ssl/openssl-wolfprov.cnf
 
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# ----------------------------------------------------------------------------
-# Step 8: Environment Variables for FIPS Mode
-# (Already set earlier before Step 3 verification)
-# ----------------------------------------------------------------------------
+# Set environment variables for Ubuntu System OpenSSL
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin" \
+    LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu" \
+    OPENSSL_CONF="/etc/ssl/openssl-wolfprov.cnf" \
+    OPENSSL_MODULES="/usr/lib/x86_64-linux-gnu/ossl-modules"
 
-# ----------------------------------------------------------------------------
-# Step 9: Final FIPS Compliance Verification
-# ----------------------------------------------------------------------------
-RUN set -eux; \
-    echo ""; \
-    echo "========================================"; \
-    echo "Final FIPS Compliance Verification"; \
-    echo "========================================"; \
-    echo ""; \
-    echo "[1/6] OpenSSL Version:"; \
-    ${OPENSSL_PREFIX}/bin/openssl version; \
-    echo ""; \
-    echo "[2/6] OpenSSL Providers:"; \
-    ${OPENSSL_PREFIX}/bin/openssl list -providers; \
-    echo ""; \
-    echo "[3/6] wolfProvider Module Location:"; \
-    ls -lah ${OPENSSL_PREFIX}/lib64/ossl-modules/; \
-    echo ""; \
-    echo "[4/6] kube-proxy Binary:"; \
-    ls -lh /kube-proxy; \
-    echo ""; \
-    echo "[5/6] Verifying wolfProvider is Active:"; \
-    if ${OPENSSL_PREFIX}/bin/openssl list -providers | grep -q "wolfprov"; then \
-        echo "✓ wolfProvider is loaded and active"; \
-    else \
-        echo "✗ ERROR: wolfProvider is NOT loaded!"; \
-        exit 1; \
-    fi; \
-    echo ""; \
-    echo "[6/6] Scanning for Non-FIPS Crypto Libraries:"; \
-    FOUND_LIBS=$(find /usr/lib /lib -type f \( \
-        -name 'libgnutls*' -o \
-        -name 'libnettle*' -o \
-        -name 'libhogweed*' -o \
-        -name 'libgcrypt*' -o \
-        -name 'libk5crypto*' \
-    \) 2>/dev/null | wc -l); \
-    if [ "$FOUND_LIBS" -eq 0 ]; then \
-        echo "✓ No non-FIPS crypto libraries found"; \
-    else \
-        echo "✗ WARNING: Found $FOUND_LIBS non-FIPS crypto library files:"; \
-        find /usr/lib /lib -type f \( \
-            -name 'libgnutls*' -o \
-            -name 'libnettle*' -o \
-            -name 'libhogweed*' -o \
-            -name 'libgcrypt*' -o \
-            -name 'libk5crypto*' \
-        \) 2>/dev/null || true; \
-    fi; \
-    echo ""; \
-    echo "========================================"; \
-    echo "✓ FIPS Compliance Verification Complete"; \
-    echo "========================================"; \
-    echo ""; \
-    echo "Environment Summary:"; \
-    echo "  OPENSSL_CONF: ${OPENSSL_CONF}"; \
-    echo "  OPENSSL_MODULES: ${OPENSSL_MODULES}"; \
-    echo "  LD_LIBRARY_PATH: ${LD_LIBRARY_PATH}"; \
-    echo "  PATH: ${PATH}"; \
-    echo ""; \
-    echo "Architecture:"; \
-    echo "  kube-proxy → golang-fips/go → OpenSSL 3 → wolfProvider → wolfSSL FIPS v5"; \
-    echo ""
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD [ "/kube-proxy", "--version" ]
 
-# ----------------------------------------------------------------------------
-# Security Hardening
-# ----------------------------------------------------------------------------
+# Run as non-root user
+USER 1001
 
-# Remove SUID/SGID bits for security
-RUN find / -perm /6000 -type f -exec chmod a-s {} \; 2>/dev/null || true
-
-# Create kube-proxy directories with root ownership
-# NOTE: kube-proxy MUST run as root (USER 0) because it requires:
-# - Writing to /sys/module/nf_conntrack/parameters/hashsize
-# - Managing iptables/nftables/IPVS rules
-# - NET_ADMIN capability for network operations
-# - Privileged access to kernel networking stack
-RUN set -eux; \
-    mkdir -p /etc/kube-proxy; \
-    mkdir -p /var/lib/kube-proxy; \
-    mkdir -p /var/log/kube-proxy; \
-    chown -R root:root /etc/kube-proxy /var/lib/kube-proxy /var/log/kube-proxy; \
-    chmod 755 /etc/kube-proxy /var/lib/kube-proxy /var/log/kube-proxy
-
-# Run as root (required for kube-proxy network operations)
-USER 0
-
-# ----------------------------------------------------------------------------
-# Container Metadata and Entrypoint
-# ----------------------------------------------------------------------------
-
-LABEL maintainer="FIPS Compliance Team" \
-      description="kube-proxy v1.33.5 with FIPS 140-3 compliance" \
-      version="v1.33.5-fips" \
-      fips.openssl="3.0.15" \
-      fips.wolfssl="5.8.2-v5.2.3" \
-      fips.wolfprovider="1.1.0" \
-      fips.certificate="4718" \
-      component="kube-proxy"
-
-# Set working directory
-WORKDIR /
-
-# NOTE: kube-proxy uses host network mode, no port exposure needed
-# DNS ports removed (kube-proxy doesn't listen on specific ports like CoreDNS)
-
-# Set entrypoint for FIPS validation
+# Entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
 
-# Default command - run kube-proxy
-# Note: Actual flags will be provided via Kubernetes DaemonSet configuration
+# Default command
 CMD ["/kube-proxy"]

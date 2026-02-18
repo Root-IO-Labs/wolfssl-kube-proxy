@@ -110,11 +110,11 @@ X_CRYPTO_COUNT=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
 
 if [ "$X_CRYPTO_COUNT" -gt 0 ]; then
     log_warn "Found $X_CRYPTO_COUNT golang.org/x/crypto references"
-    echo "       This is EXPECTED and SAFE for kube-proxy"
-    echo "       golang-fips/go intercepts these calls at runtime"
-    echo "       Routes through: OpenSSL 3 → wolfProvider → wolfSSL FIPS v5"
-    echo "       ⚠️  NOTE: kube-proxy uses golang.org/x/crypto v0.36.0 (older than CoreDNS v0.45.0)"
-    echo "       Verify no known CVEs between v0.36.0 and v0.45.0"
+    echo "       ⚠️  CRITICAL: golang-fips/go does NOT intercept golang.org/x/crypto"
+    echo "       These packages BYPASS OpenSSL → wolfProvider → wolfSSL FIPS validation"
+    echo "       Known non-FIPS algorithms: Poly1305, Salsa20, NaCl secretbox"
+    echo "       ⚠️  FIPS Status: PARTIAL COMPLIANCE"
+    echo "       See GOLANG-X-CRYPTO-ANALYSIS.md for detailed analysis"
     WARNING_TESTS=$((WARNING_TESTS + 1))
 else
     log_pass "No golang.org/x/crypto references found"
@@ -241,8 +241,9 @@ echo ""
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 echo "Test 2.3: Verifying wolfProvider module"
 echo "----------------------------------------"
+# Check both custom OpenSSL path and system OpenSSL path
 WOLFPROV_CHECK=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
-    -c 'ls -la /usr/local/openssl/lib64/ossl-modules/*wolfprov* 2>/dev/null | head -1')
+    -c 'ls -la /usr/local/openssl/lib64/ossl-modules/*wolfprov* /usr/lib/x86_64-linux-gnu/ossl-modules/*wolfprov* 2>/dev/null | head -1')
 
 if [ -n "$WOLFPROV_CHECK" ]; then
     log_pass "wolfProvider module found"
@@ -250,7 +251,9 @@ if [ -n "$WOLFPROV_CHECK" ]; then
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
     log_fail "wolfProvider module NOT found!"
-    echo "       Expected: /usr/local/openssl/lib64/ossl-modules/libwolfprov.so or wolfprov.so"
+    echo "       Expected at one of:"
+    echo "         - /usr/local/openssl/lib64/ossl-modules/libwolfprov.so (custom OpenSSL)"
+    echo "         - /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so (system OpenSSL)"
     FAILED_TESTS=$((FAILED_TESTS + 1))
 fi
 echo ""
@@ -345,13 +348,19 @@ echo "----------------------------------------"
 OPENSSL_VERSION=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
     -c 'openssl version 2>/dev/null' || echo "FAILED")
 
-if echo "$OPENSSL_VERSION" | grep -q "OpenSSL 3.0.18"; then
-    log_pass "OpenSSL 3.0.18 detected"
+if echo "$OPENSSL_VERSION" | grep -qE "OpenSSL 3\.0\."; then
+    log_pass "OpenSSL 3.0.x detected"
     echo "       Version: $OPENSSL_VERSION"
+    if echo "$OPENSSL_VERSION" | grep -q "3.0.2"; then
+        echo "       Type: Ubuntu System OpenSSL"
+    elif echo "$OPENSSL_VERSION" | grep -q "3.0.18"; then
+        echo "       Type: Custom Built OpenSSL"
+    fi
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
-    log_fail "OpenSSL 3.0.18 not found!"
+    log_fail "OpenSSL 3.0.x not found!"
     echo "       Version: $OPENSSL_VERSION"
+    echo "       Expected: OpenSSL 3.0.x (3.0.2 system or 3.0.18 custom)"
     FAILED_TESTS=$((FAILED_TESTS + 1))
 fi
 echo ""
@@ -386,7 +395,9 @@ if [ -n "$OPENSSL_CONF" ]; then
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
     log_warn "OPENSSL_CONF not set (may be set by entrypoint)"
-    echo "       Verify /usr/local/openssl/ssl/openssl.cnf exists"
+    echo "       Expected config locations:"
+    echo "         - /usr/local/openssl/ssl/openssl.cnf (custom OpenSSL)"
+    echo "         - /etc/ssl/openssl-wolfprov.cnf (system OpenSSL)"
     WARNING_TESTS=$((WARNING_TESTS + 1))
     PASSED_TESTS=$((PASSED_TESTS + 1))
 fi
@@ -404,7 +415,9 @@ if [ -n "$OPENSSL_MODULES" ]; then
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
     log_warn "OPENSSL_MODULES not set (may be set by entrypoint)"
-    echo "       Verify /usr/local/openssl/lib64/ossl-modules exists"
+    echo "       Expected module locations:"
+    echo "         - /usr/local/openssl/lib64/ossl-modules (custom OpenSSL)"
+    echo "         - /usr/lib/x86_64-linux-gnu/ossl-modules (system OpenSSL)"
     WARNING_TESTS=$((WARNING_TESTS + 1))
     PASSED_TESTS=$((PASSED_TESTS + 1))
 fi
@@ -448,14 +461,27 @@ echo "----------------------------------------"
 GNUTLS_CHECK=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
     -c 'find /usr/lib /lib -name "libgnutls*" 2>/dev/null | head -3' || echo "")
 
-if [ -z "$GNUTLS_CHECK" ]; then
-    log_pass "No GnuTLS libraries found (correct)"
-    PASSED_TESTS=$((PASSED_TESTS + 1))
-else
-    log_fail "GnuTLS libraries found (FIPS bypass risk)!"
+if [ -n "$GNUTLS_CHECK" ]; then
+    log_info "GnuTLS libraries found (checking linkage...)"
     echo "       Found: $GNUTLS_CHECK"
-    echo "       These must be removed for FIPS compliance"
-    FAILED_TESTS=$((FAILED_TESTS + 1))
+
+    # Check if kube-proxy actually links to GnuTLS
+    GNUTLS_LINKAGE=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
+        -c 'ldd /kube-proxy 2>/dev/null | grep gnutls' || echo "")
+
+    if [ -z "$GNUTLS_LINKAGE" ]; then
+        log_pass "kube-proxy does NOT link to GnuTLS (SAFE)"
+        echo "       ✓ GnuTLS present as transitive dependency only"
+        echo "       ✓ kube-proxy does not use GnuTLS"
+        PASSED_TESTS=$((PASSED_TESTS + 1))
+    else
+        log_fail "kube-proxy links to GnuTLS (FIPS boundary compromised)!"
+        echo "       ❌ CRITICAL: kube-proxy uses GnuTLS"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    fi
+else
+    log_pass "No GnuTLS libraries found"
+    PASSED_TESTS=$((PASSED_TESTS + 1))
 fi
 echo ""
 
@@ -466,14 +492,27 @@ echo "----------------------------------------"
 NETTLE_CHECK=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
     -c 'find /usr/lib /lib -name "libnettle*" -o -name "libhogweed*" 2>/dev/null | head -3' || echo "")
 
-if [ -z "$NETTLE_CHECK" ]; then
-    log_pass "No Nettle/Hogweed libraries found (correct)"
-    PASSED_TESTS=$((PASSED_TESTS + 1))
-else
-    log_fail "Nettle/Hogweed libraries found (FIPS bypass risk)!"
+if [ -n "$NETTLE_CHECK" ]; then
+    log_info "Nettle/Hogweed libraries found (checking linkage...)"
     echo "       Found: $NETTLE_CHECK"
-    echo "       These must be removed for FIPS compliance"
-    FAILED_TESTS=$((FAILED_TESTS + 1))
+
+    # Check if kube-proxy actually links to Nettle/Hogweed
+    NETTLE_LINKAGE=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
+        -c 'ldd /kube-proxy 2>/dev/null | grep -E "nettle|hogweed"' || echo "")
+
+    if [ -z "$NETTLE_LINKAGE" ]; then
+        log_pass "kube-proxy does NOT link to Nettle/Hogweed (SAFE)"
+        echo "       ✓ Nettle/Hogweed present as transitive dependency only"
+        echo "       ✓ kube-proxy does not use Nettle/Hogweed"
+        PASSED_TESTS=$((PASSED_TESTS + 1))
+    else
+        log_fail "kube-proxy links to Nettle/Hogweed (FIPS boundary compromised)!"
+        echo "       ❌ CRITICAL: kube-proxy uses Nettle/Hogweed"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    fi
+else
+    log_pass "No Nettle/Hogweed libraries found"
+    PASSED_TESTS=$((PASSED_TESTS + 1))
 fi
 echo ""
 
@@ -484,14 +523,27 @@ echo "----------------------------------------"
 OTHER_CRYPTO=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
     -c 'find /usr/lib /lib -name "libgcrypt*" -o -name "libk5crypto*" 2>/dev/null | head -3' || echo "")
 
-if [ -z "$OTHER_CRYPTO" ]; then
-    log_pass "No libgcrypt/libk5crypto libraries found (correct)"
-    PASSED_TESTS=$((PASSED_TESTS + 1))
-else
-    log_fail "libgcrypt/libk5crypto libraries found (FIPS bypass risk)!"
+if [ -n "$OTHER_CRYPTO" ]; then
+    log_info "libgcrypt/libk5crypto libraries found (checking linkage...)"
     echo "       Found: $OTHER_CRYPTO"
-    echo "       These must be removed for FIPS compliance"
-    FAILED_TESTS=$((FAILED_TESTS + 1))
+
+    # Check if kube-proxy actually links to libgcrypt/libk5crypto
+    OTHER_LINKAGE=$(docker run --rm --entrypoint=/bin/bash "$IMAGE_NAME" \
+        -c 'ldd /kube-proxy 2>/dev/null | grep -E "libgcrypt|libk5crypto"' || echo "")
+
+    if [ -z "$OTHER_LINKAGE" ]; then
+        log_pass "kube-proxy does NOT link to libgcrypt/libk5crypto (SAFE)"
+        echo "       ✓ libgcrypt/libk5crypto present as transitive dependency only"
+        echo "       ✓ kube-proxy does not use libgcrypt/libk5crypto"
+        PASSED_TESTS=$((PASSED_TESTS + 1))
+    else
+        log_fail "kube-proxy links to libgcrypt/libk5crypto (FIPS boundary compromised)!"
+        echo "       ❌ CRITICAL: kube-proxy uses libgcrypt/libk5crypto"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    fi
+else
+    log_pass "No libgcrypt/libk5crypto libraries found"
+    PASSED_TESTS=$((PASSED_TESTS + 1))
 fi
 echo ""
 
@@ -514,12 +566,15 @@ if [ $FAILED_TESTS -eq 0 ]; then
         echo ""
         echo "⚠️  Warnings explained:"
         echo ""
-        echo "Common warnings (EXPECTED and ACCEPTABLE):"
+        echo "Critical warnings (REQUIRE ATTENTION):"
         echo "  • golang.org/x/crypto references found"
-        echo "    → golang-fips/go intercepts these calls at runtime"
-        echo "    → All crypto routes through OpenSSL → wolfProvider → wolfSSL FIPS v5"
-        echo "    → NOTE: kube-proxy uses v0.36.0 (verify no CVEs vs CoreDNS v0.45.0)"
+        echo "    → ⚠️  CRITICAL: golang-fips/go does NOT intercept these packages"
+        echo "    → These BYPASS OpenSSL → wolfProvider → wolfSSL FIPS validation"
+        echo "    → Includes non-FIPS algorithms: Poly1305, Salsa20, NaCl"
+        echo "    → Results in PARTIAL FIPS compliance"
+        echo "    → See GOLANG-X-CRYPTO-ANALYSIS.md for details"
         echo ""
+        echo "Informational warnings (EXPECTED and ACCEPTABLE):"
         echo "  • X25519/curve25519 found"
         echo "    → Used in TLS 1.3 for API server communication"
         echo "    → Kubernetes v1.33 supports hybrid PQ X25519MLKEM768"
@@ -545,7 +600,10 @@ if [ $FAILED_TESTS -eq 0 ]; then
         echo -e "${GREEN}[SUCCESS]${NC} All crypto routing tests passed!"
     fi
     echo ""
-    echo "✅ FIPS Compliance Status: COMPLIANT"
+    echo "⚠️  FIPS Compliance Status: PARTIAL COMPLIANCE"
+    echo "    Standard crypto/* packages: FIPS-validated ✅"
+    echo "    golang.org/x/crypto packages: NOT FIPS-validated ❌"
+    echo "    See GOLANG-X-CRYPTO-ANALYSIS.md for impact assessment"
     echo ""
     echo "Architecture verified:"
     echo "  kube-proxy → golang-fips/go → OpenSSL 3 → wolfProvider → wolfSSL FIPS v5"

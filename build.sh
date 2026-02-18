@@ -1,263 +1,206 @@
 #!/bin/bash
-#
-# Build script for kube-proxy v1.33.5 FIPS-enabled image
-#
-# Usage: ./build.sh [OPTIONS]
-#
-# Options:
-#   --tag TAG          Custom image tag (default: kube-proxy-fips:v1.33.5-ubuntu-22.04)
-#   --no-cache         Build without cache
-#   --push             Push to registry after build
-#   --registry URL     Registry URL for push
-#   --help             Show this help message
-#
+################################################################################
+# Build script for kube-proxy FIPS with Ubuntu System OpenSSL
+################################################################################
+# This script builds kube-proxy using the system-openssl Dockerfile which:
+# - Uses Ubuntu APT-managed OpenSSL (libssl3) instead of building from source
+# - Safer: No manual file replacement of APT packages
+# - Faster: ~20 minutes faster build (no OpenSSL compilation)
+# - Consistent with PostgreSQL and Valkey implementations
+################################################################################
 
-set -e
+set -euo pipefail
 
-# Default configuration
-DEFAULT_TAG="kube-proxy-fips:v1.33.5-ubuntu-22.04"
-IMAGE_TAG="${DEFAULT_TAG}"
-NO_CACHE=""
-PUSH=false
-REGISTRY=""
+# Configuration
+IMAGE_NAME="${IMAGE_NAME:-kube-proxy-fips}"
+IMAGE_TAG="${IMAGE_TAG:-v1.33.5-ubuntu-22.04}"
+DOCKERFILE="${DOCKERFILE:-Dockerfile}"
+OPENSSL_CONFIG="${OPENSSL_CONFIG:-openssl-wolfprov.cnf}"
+WOLFSSL_PASSWORD_FILE="${WOLFSSL_PASSWORD_FILE:-wolfssl_password.txt}"
 
-# Color codes
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Functions
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${GREEN}[INFO]${NC} $1"
 }
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-show_help() {
-    cat << EOF
-Build script for kube-proxy v1.33.5 FIPS-enabled image
+check_prerequisites() {
+    log_info "Checking prerequisites..."
 
-Usage: $0 [OPTIONS]
-
-Options:
-    --tag TAG          Custom image tag (default: ${DEFAULT_TAG})
-    --no-cache         Build without cache
-    --push             Push to registry after build
-    --registry URL     Registry URL for push (required if --push is used)
-    --help             Show this help message
-
-Examples:
-    # Basic build
-    $0
-
-    # Build with custom tag
-    $0 --tag my-registry.com/kube-proxy-fips:v1.33.5
-
-    # Build and push to registry
-    $0 --push --registry my-registry.com
-
-    # Build without cache
-    $0 --no-cache
-
-Environment Variables:
-    DOCKER_BUILDKIT    Set to 1 (required for build)
-
-Requirements:
-    - Docker 20.10+ with BuildKit support
-    - wolfssl_password.txt file in current directory
-    - 8GB+ RAM available
-    - 20GB+ free disk space
-
-EOF
-}
-
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --tag)
-            IMAGE_TAG="$2"
-            shift 2
-            ;;
-        --no-cache)
-            NO_CACHE="--no-cache"
-            shift
-            ;;
-        --push)
-            PUSH=true
-            shift
-            ;;
-        --registry)
-            REGISTRY="$2"
-            shift 2
-            ;;
-        --help)
-            show_help
-            exit 0
-            ;;
-        *)
-            log_error "Unknown option: $1"
-            show_help
-            exit 1
-            ;;
-    esac
-done
-
-# Banner
-echo ""
-echo "========================================"
-echo "kube-proxy v1.33.5 FIPS Build"
-echo "========================================"
-echo ""
-
-# Pre-flight checks
-log_info "Running pre-flight checks..."
-
-# Check if wolfssl_password.txt exists
-if [ ! -f "wolfssl_password.txt" ]; then
-    log_error "wolfssl_password.txt not found!"
-    log_error "This file is required for building wolfSSL FIPS v5"
-    exit 1
-fi
-log_success "wolfssl_password.txt found"
-
-# Check if Dockerfile exists
-if [ ! -f "Dockerfile" ]; then
-    log_error "Dockerfile not found!"
-    exit 1
-fi
-log_success "Dockerfile found"
-
-# Check Docker BuildKit
-if [ "${DOCKER_BUILDKIT:-0}" != "1" ]; then
-    log_warning "DOCKER_BUILDKIT is not set to 1"
-    log_info "Setting DOCKER_BUILDKIT=1 for this build"
-    export DOCKER_BUILDKIT=1
-fi
-log_success "Docker BuildKit enabled"
-
-# Check if Docker is available
-if ! command -v docker &> /dev/null; then
-    log_error "Docker command not found!"
-    exit 1
-fi
-log_success "Docker is available"
-
-# Check Docker version
-DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
-log_info "Docker version: ${DOCKER_VERSION}"
-
-# If push is requested, validate registry
-if [ "$PUSH" = true ]; then
-    if [ -z "$REGISTRY" ]; then
-        log_error "--push requires --registry URL"
+    # Check Docker
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker is not installed"
         exit 1
     fi
-    # Update tag with registry if not already included
-    if [[ "$IMAGE_TAG" != *"$REGISTRY"* ]]; then
-        IMAGE_TAG="${REGISTRY}/${IMAGE_TAG}"
+
+    # Check BuildKit
+    if ! docker buildx version &> /dev/null; then
+        log_error "Docker Buildx is not available"
+        exit 1
     fi
-    log_info "Will push to registry: ${REGISTRY}"
-fi
 
-echo ""
-log_info "Build configuration:"
-echo "  Image tag: ${IMAGE_TAG}"
-echo "  Cache: $([ -z "$NO_CACHE" ] && echo "enabled" || echo "disabled")"
-echo "  Push: ${PUSH}"
-echo ""
+    # Check wolfSSL password file
+    if [ ! -f "$WOLFSSL_PASSWORD_FILE" ]; then
+        log_error "wolfSSL password file not found: $WOLFSSL_PASSWORD_FILE"
+        exit 1
+    fi
 
-# Confirm build
-read -p "Proceed with build? (y/N): " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    log_warning "Build cancelled by user"
-    exit 0
-fi
+    # Check Dockerfile
+    if [ ! -f "$DOCKERFILE" ]; then
+        log_error "Dockerfile not found: $DOCKERFILE"
+        exit 1
+    fi
 
-# Start build
-echo ""
-log_info "Starting FIPS build (this will take ~50-60 minutes)..."
-log_info "Build stages:"
-echo "  1. OpenSSL 3.0.15 with FIPS module"
-echo "  2. wolfSSL FIPS v5.8.2 (Certificate #4718)"
-echo "  3. wolfProvider v1.1.0"
-echo "  4. golang-fips/go toolchain (longest stage)"
-echo "  5. kube-proxy v1.33.5 binary"
-echo "  6. FIPS-compliant runtime image"
-echo ""
+    # Check OpenSSL config
+    if [ ! -f "$OPENSSL_CONFIG" ]; then
+        log_error "OpenSSL config not found: $OPENSSL_CONFIG"
+        exit 1
+    fi
 
-# Record start time
-START_TIME=$(date +%s)
+    log_info "✓ All prerequisites met"
+}
 
-# Run Docker build
-if docker buildx build \
-    --progress plain \
-    --secret id=wolfssl_password,src=wolfssl_password.txt \
-    -t "${IMAGE_TAG}" \
-    ${NO_CACHE} \
-    -f Dockerfile .; then
+build_image() {
+    log_info "Building kube-proxy FIPS image with Ubuntu System OpenSSL..."
+    log_info "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+    log_info "Dockerfile: ${DOCKERFILE}"
+    log_info "OpenSSL Config: ${OPENSSL_CONFIG}"
 
-    # Calculate build time
-    END_TIME=$(date +%s)
-    BUILD_TIME=$((END_TIME - START_TIME))
-    BUILD_TIME_MIN=$((BUILD_TIME / 60))
-    BUILD_TIME_SEC=$((BUILD_TIME % 60))
+    # Build with progress=plain to show all warnings
+    if docker buildx build \
+        --progress plain \
+        --load \
+        --secret id=wolfssl_password,src="$WOLFSSL_PASSWORD_FILE" \
+        -f "$DOCKERFILE" \
+        -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+        .; then
+        log_info "✓ Build successful"
+        return 0
+    else
+        log_error "Build failed"
+        return 1
+    fi
+}
 
-    echo ""
-    log_success "Build completed successfully!"
-    log_info "Build time: ${BUILD_TIME_MIN}m ${BUILD_TIME_SEC}s"
-    echo ""
+verify_image() {
+    log_info "Verifying image..."
 
-    # Show image info
-    log_info "Image information:"
-    docker images "${IMAGE_TAG}" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}"
-    echo ""
+    # Check image exists
+    if ! docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}" &> /dev/null; then
+        log_error "Image not found after build"
+        return 1
+    fi
 
-    # Push if requested
-    if [ "$PUSH" = true ]; then
-        log_info "Pushing image to registry..."
-        if docker push "${IMAGE_TAG}"; then
-            log_success "Image pushed successfully!"
+    # Get image size
+    IMAGE_SIZE=$(docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}" | grep -oP '(?<="Size": )\d+' | head -1)
+    IMAGE_SIZE_MB=$((IMAGE_SIZE / 1024 / 1024))
+    log_info "Image size: ${IMAGE_SIZE_MB} MB"
+
+    # Test basic functionality
+    log_info "Testing kube-proxy version..."
+    if docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" /kube-proxy --version; then
+        log_info "✓ kube-proxy version check passed"
+    else
+        log_error "kube-proxy version check failed"
+        return 1
+    fi
+
+    # Test FIPS validation
+    log_info "Testing FIPS validation..."
+    if docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" /usr/local/bin/fips-startup-check; then
+        log_info "✓ FIPS validation passed"
+    else
+        log_warn "FIPS validation failed or not available"
+    fi
+
+    # Verify system OpenSSL is used (not custom build)
+    log_info "Verifying system OpenSSL usage..."
+    if docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" sh -c 'test ! -d /usr/local/openssl'; then
+        log_info "✓ No custom OpenSSL found (using system OpenSSL)"
+    else
+        log_error "Custom OpenSSL directory found - this should not exist!"
+        return 1
+    fi
+
+    # Verify wolfProvider location
+    log_info "Verifying wolfProvider location..."
+    if docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" sh -c 'ls -la /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so'; then
+        log_info "✓ wolfProvider found in system location"
+    else
+        log_error "wolfProvider not found in system location"
+        return 1
+    fi
+
+    log_info "✓ All verifications passed"
+    return 0
+}
+
+print_summary() {
+    echo
+    echo "================================================================================"
+    echo " kube-proxy FIPS Build Summary (Ubuntu System OpenSSL)"
+    echo "================================================================================"
+    echo " Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+    echo " Dockerfile: ${DOCKERFILE}"
+    echo " OpenSSL: Ubuntu APT-managed (libssl3)"
+    echo " wolfProvider: /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so"
+    echo " FIPS Module: wolfSSL FIPS v5.8.2 (Certificate #4718)"
+    echo "================================================================================"
+    echo
+    echo "Next steps:"
+    echo "  1. Test the image: docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} --version"
+    echo "  2. Run FIPS validation: docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} fips-startup-check"
+    echo "  3. Deploy to Kubernetes cluster"
+    echo
+    echo "Benefits of System OpenSSL approach:"
+    echo "  ✓ Safe: No manual replacement of APT-managed files"
+    echo "  ✓ Faster: ~20 minutes faster build time"
+    echo "  ✓ Maintainable: System updates work correctly"
+    echo "  ✓ Consistent: Matches PostgreSQL/Valkey pattern"
+    echo "================================================================================"
+}
+
+main() {
+    log_info "Starting kube-proxy FIPS build with Ubuntu System OpenSSL"
+    echo
+
+    check_prerequisites
+
+    BUILD_START=$(date +%s)
+
+    if build_image; then
+        BUILD_END=$(date +%s)
+        BUILD_TIME=$((BUILD_END - BUILD_START))
+        BUILD_MINUTES=$((BUILD_TIME / 60))
+        BUILD_SECONDS=$((BUILD_TIME % 60))
+
+        log_info "Build completed in ${BUILD_MINUTES}m ${BUILD_SECONDS}s"
+
+        if verify_image; then
+            print_summary
+            exit 0
         else
-            log_error "Failed to push image"
+            log_error "Image verification failed"
             exit 1
         fi
-        echo ""
+    else
+        log_error "Build failed"
+        exit 1
     fi
+}
 
-    # Show verification commands
-    log_info "Verification commands:"
-    echo ""
-    echo "  # Verify wolfProvider is loaded"
-    echo "  docker run --rm ${IMAGE_TAG} openssl list -providers"
-    echo ""
-    echo "  # Test FIPS-approved algorithm"
-    echo "  docker run --rm ${IMAGE_TAG} sh -c 'echo test | openssl dgst -sha256'"
-    echo ""
-    echo "  # Check for non-FIPS crypto libraries (should be empty)"
-    echo "  docker run --rm ${IMAGE_TAG} find /usr/lib /lib -name 'libgnutls*'"
-    echo ""
-    echo "  # Run kube-proxy with FIPS validation (requires Kubernetes cluster)"
-    echo "  docker run --rm --privileged --net=host \\"
-    echo "    -v /lib/modules:/lib/modules:ro \\"
-    echo "    ${IMAGE_TAG}"
-    echo ""
-
-    log_success "Build process complete!"
-
-else
-    log_error "Build failed!"
-    exit 1
-fi
+# Run main function
+main "$@"
