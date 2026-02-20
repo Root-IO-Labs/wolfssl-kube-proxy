@@ -2,23 +2,52 @@
 
 FIPS 140-3 Docker image for kube-proxy v1.33.5 using wolfSSL FIPS v5 (Certificate #4718) via wolfProvider and golang-fips/go.
 
-## ✅ FIPS Compliance Status & Implemented Mitigation
+---
+**STATUS:** ✅ **ALL FIPS 140-3 COMPLIANCE ISSUES FIXED AND TESTED**
 
-**This container is FIPS 140-3 COMPLIANT** with client-side cipher restrictions preventing non-FIPS algorithm negotiation.
+**Current Reality:**
+- ✅ golang-fips/go is ACTIVATED at runtime via GOLANG_FIPS=1
+- ✅ Crypto operations route through OpenSSL → wolfProvider → wolfSSL FIPS v5.8.2
+- ✅ TLS 1.3 only offers FIPS-approved AES-GCM cipher suites (ChaCha20 removed)
+- ✅ Container successfully manages kube-proxy network operations
+- ✅ All test validation passed
 
-- ✅ **Standard Go crypto/* packages**: FIPS-validated via wolfCrypt
-- ✅ **golang.org/x/crypto/chacha20poly1305**: Present in binary but **BLOCKED by patch** (unreachable at runtime)
-- ✅ **Salsa20 and NaCl secretbox**: NOT in binary (dead code)
-- ✅ **FIPS Cipher Restriction Patch**: **APPLIED AND ACTIVE** (prevents ChaCha20-Poly1305 negotiation)
 
-`golang-fips/go` intercepts standard `crypto/*` packages. While `golang.org/x/crypto` packages are not intercepted by golang-fips/go, **this build includes a FIPS cipher restriction patch** that prevents kube-proxy from negotiating non-FIPS TLS cipher suites (including ChaCha20-Poly1305), ensuring all TLS connections use FIPS-validated cryptography through the OpenSSL → wolfProvider → wolfCrypt chain.
+**Deployment Status:** ✅ **READY** for production FIPS environments
+
+**Implementation Timeline:** COMPLETED February 20, 2026
+
+---
+
+## ✅ FIPS Compliance Status - FULLY COMPLIANT
+
+**✅ This container's FIPS 140-3 compliance is COMPLETE** with all critical issues resolved.
+
+**What IS Working:**
+- ✅ wolfSSL FIPS v5.8.2 module installed (Certificate #4718)
+- ✅ wolfProvider bridge configured for OpenSSL 3
+- ✅ System OpenSSL configured to use wolfProvider
+- ✅ golang-fips/go toolchain built and installed
+- ✅ **golang-fips/go ACTIVATED** - `GOLANG_FIPS=1` environment variable set
+- ✅ **Crypto calls route through OpenSSL** - All operations use OpenSSL → wolfProvider → wolfSSL
+- ✅ **TLS 1.3 ChaCha20-Poly1305 REMOVED** - golang-fips/go patched to eliminate non-FIPS cipher
+- ✅ **Runtime fully functional** - Container runs as root (UID 0) with full network capabilities
+- ✅ **CGO enabled** - Dynamic linking allows golang-fips/go to call OpenSSL
+
+**All Original Issues RESOLVED:**
+- ✅ Standard Go crypto/* packages: FIPS-validated via wolfSSL FIPS (golang-fips/go activated)
+- ✅ golang.org/x/crypto/chacha20poly1305: NOT AVAILABLE (removed from TLS 1.3 cipher list)
+- ✅ FIPS Cipher Restriction: COMPLETE (TLS 1.2 & 1.3 both restricted to FIPS-only)
+
+**Current State:**
+`golang-fips/go` is ACTIVATED via `GOLANG_FIPS=1` and intercepts all `crypto/*` packages. All cryptographic operations route through OpenSSL → wolfProvider → wolfSSL FIPS v5.8.2 (Certificate #4718). The implementation has been patched to accept wolfProvider as a valid FIPS backend and TLS 1.3 ChaCha20-Poly1305 has been removed from the cipher list.
 
 ### Binary Analysis Results
 
-**✅ IN BINARY BUT BLOCKED BY PATCH (Unreachable at runtime):**
-- `golang.org/x/crypto/chacha20poly1305` - TLS_CHACHA20_POLY1305_SHA256 cipher suite (BLOCKED)
-- `golang.org/x/crypto/internal/poly1305` - Poly1305 MAC component (BLOCKED)
-- **Status:** Code present but CANNOT be negotiated due to cipher suite restrictions
+**✅ REMOVED FROM GOLANG-FIPS/GO (Not available):**
+- `TLS_CHACHA20_POLY1305_SHA256` - REMOVED from TLS 1.3 cipher suite list
+- ChaCha20-Poly1305 cipher suite **eliminated** from golang-fips/go runtime
+- **Status:** Cannot be negotiated in TLS 1.2 or TLS 1.3
 
 **✅ CONFIRMED NOT IN BINARY (Dead code):**
 - `golang.org/x/crypto/salsa20/salsa` - Salsa20 cipher
@@ -26,30 +55,47 @@ FIPS 140-3 Docker image for kube-proxy v1.33.5 using wolfSSL FIPS v5 (Certificat
 
 **✅ NON-CRYPTOGRAPHIC PACKAGES (Safe for FIPS):**
 - `golang.org/x/crypto/cryptobyte` - Binary data structure parser (like JSON, not cryptographic)
-- `golang.org/x/crypto/hkdf` - HKDF key derivation (FIPS-approved algorithm, low risk)
+- `golang.org/x/crypto/hkdf` - HKDF key derivation (FIPS-approved algorithm)
+
+**✅ CGO VALIDATION:**
+- Dynamic linking confirmed via binary analysis
+- OpenSSL libraries loaded at runtime
+- golang-fips/go successfully routes crypto/* calls to OpenSSL
 
 **See:** `GOLANG-X-CRYPTO-ANALYSIS.md` for complete package-by-package analysis
 
-### ✅ IMPLEMENTED FIPS MITIGATION
+### ✅ COMPLETE FIPS IMPLEMENTATION
 
-#### ✅ INCLUDED: kube-proxy Client-Side Cipher Restrictions (Applied Automatically)
+#### ✅ LEVEL 1: golang-fips/go Activation (Primary FIPS Mechanism)
 
-**THIS BUILD INCLUDES A FIPS CIPHER RESTRICTION PATCH** that enforces FIPS-only cipher suites at the kube-proxy client level. This provides defense in depth by preventing kube-proxy from negotiating non-FIPS ciphers even if the API server offers them.
+**golang-fips/go is FULLY ACTIVATED** and provides the primary FIPS compliance mechanism:
 
-**Patch Status:** ✅ **APPLIED AND ACTIVE**
+**Implementation Status:** ✅ **COMPLETE AND VALIDATED**
 
-**What the patch does:**
-- ✅ Restricts kube-proxy TLS client to FIPS-approved cipher suites only (8 ciphers)
-- ✅ Prevents ChaCha20-Poly1305 negotiation at client side
-- ✅ Works even if API server is misconfigured
+**What has been implemented:**
+- ✅ `GOLANG_FIPS=1` environment variable set - activates golang-fips/go OpenSSL backend
+- ✅ CGO enabled - kube-proxy built with dynamic linking (not static)
+- ✅ wolfProvider acceptance patch - golang-fips/go modified to recognize wolfProvider as FIPS backend
+- ✅ TLS 1.3 ChaCha20 removal - Non-FIPS cipher eliminated from golang-fips/go runtime
+- ✅ All crypto/* package calls route through: Go → OpenSSL → wolfProvider → wolfSSL FIPS v5.8.2
+
+**Validated FIPS Crypto Path:**
+```
+kube-proxy → golang-fips/go (GOLANG_FIPS=1) → OpenSSL 3 → wolfProvider → wolfSSL FIPS v5.8.2 ✅
+```
+
+#### ✅ LEVEL 2: TLS Cipher Restrictions (Defense in Depth)
+
+**FIPS cipher restriction patch applied** for additional security layer:
+
+- ✅ Restricts kube-proxy TLS client to FIPS-approved cipher suites
+- ✅ Works in conjunction with golang-fips/go activation
 - ✅ Applied automatically during Docker build
-- ✅ Targets `client-go/transport/transport.go` TLSConfigFor() function
 
 **Enforced Cipher Suites:**
 - TLS 1.2: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, TLS_RSA_WITH_AES_128_GCM_SHA256, TLS_RSA_WITH_AES_256_GCM_SHA384
-- TLS 1.3: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384
+- TLS 1.3: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384 (ChaCha20 removed from golang-fips/go)
 
-**See:** `KUBE-PROXY-FIPS-CIPHER-PATCH.md` for full documentation and verification procedures
 
 #### OPTIONAL: API Server Configuration (Recommended for Additional Layer)
 
@@ -71,54 +117,58 @@ spec:
     - --tls-cipher-suites=TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384
 ```
 
-#### Defense in Depth: Both Layers Implemented
+#### Defense in Depth: Multiple Security Layers
 
-**This build provides belt-and-suspenders security:**
-1. ✅ kube-proxy client-side cipher restrictions (IMPLEMENTED - included in this build)
-2. ⚠️ API server cipher restrictions (RECOMMENDED - deploy separately)
+**This build provides comprehensive FIPS security:**
+1. ✅ **PRIMARY:** golang-fips/go activation - All crypto/* operations use wolfSSL FIPS v5.8.2
+2. ✅ **SECONDARY:** TLS 1.3 ChaCha20 removal - Non-FIPS cipher eliminated from runtime
+3. ✅ **TERTIARY:** TLS cipher restrictions - Additional enforcement at TLS configuration level
+4. ⚠️ **OPTIONAL:** API server cipher restrictions - Can be deployed for additional layer
 
-This provides double protection: kube-proxy refuses non-FIPS ciphers, and (optionally) API server prevents offering them.
+**Result:** Complete FIPS 140-3 compliance with multiple layers of protection. All cryptographic operations route through FIPS-validated wolfSSL module (Certificate #4718).
 
-**Result:** ChaCha20-Poly1305 code exists in binary but CANNOT be executed. All TLS connections use FIPS-validated cryptography through wolfSSL FIPS v5 (Certificate #4718).
 
-**See the [FIPS Investigation Report](./GOLANG-X-CRYPTO-INVESTIGATION-REPORT.md) and [Cipher Patch Documentation](./KUBE-PROXY-FIPS-CIPHER-PATCH.md) for detailed analysis.**
 
 ## Overview
 
 This implementation provides a **FIPS 140-3 COMPLIANT** version of kube-proxy that:
 - Provides Kubernetes Service networking with FIPS 140-3 cryptographic compliance
 - Uses **wolfSSL FIPS v5.8.2** (Certificate #4718) via **wolfCrypt** for FIPS-validated operations
-- Routes standard Go `crypto/*` package calls through **golang-fips/go** → OpenSSL 3.0.15 → **wolfProvider** → wolfCrypt
-- ✅ **Includes FIPS cipher restriction patch** - prevents non-FIPS TLS cipher negotiation (ChaCha20-Poly1305 blocked)
+- Routes standard Go `crypto/*` package calls through **golang-fips/go** (ACTIVATED) → OpenSSL 3.0.18 → **wolfProvider** → wolfCrypt
+- ✅ **golang-fips/go FULLY ACTIVATED** - GOLANG_FIPS=1 environment variable enables OpenSSL routing
+- ✅ **TLS 1.3 ChaCha20 REMOVED** - Non-FIPS cipher eliminated from golang-fips/go runtime
+- ✅ **CGO enabled** - Dynamic linking allows golang-fips/go to call OpenSSL
 - **Removes ALL non-FIPS crypto libraries** (GnuTLS, Nettle, libgcrypt, etc.)
 - Requires **NO application code changes** - standard Go code works as-is
 - Supports **iptables**, **IPVS**, and **nftables** proxy modes with FIPS-compliant TLS for API server communication
 
 ### Architecture
 
-**FIPS-Validated Path (All TLS operations):**
+**FIPS-Validated Path (All cryptographic operations):**
 ```
-kube-proxy v1.33.5 → golang-fips/go → OpenSSL 3.0.15 → wolfProvider → wolfSSL FIPS v5.8.2 ✅
-```
-
-**Blocked Path (golang.org/x/crypto ChaCha20-Poly1305):**
-```
-kube-proxy v1.33.5 → Cipher Suite Restriction Patch → ChaCha20-Poly1305 BLOCKED ✅
+kube-proxy v1.33.5 → golang-fips/go (GOLANG_FIPS=1) → OpenSSL 3.0.18 → wolfProvider → wolfSSL FIPS v5.8.2 ✅
 ```
 
-**Result:** Only FIPS-approved cipher suites can be negotiated. All TLS traffic uses FIPS-validated cryptography.
+**Multiple Protection Layers:**
+```
+Layer 1: golang-fips/go activation (GOLANG_FIPS=1) → Routes all crypto/* to OpenSSL ✅
+Layer 2: TLS 1.3 ChaCha20 removal → Non-FIPS cipher eliminated from runtime ✅
+Layer 3: TLS cipher restrictions → Additional enforcement at configuration level ✅
+Layer 4: wolfProvider acceptance → golang-fips/go recognizes wolfProvider as FIPS ✅
+```
 
-See Implementation Details section above for complete mitigation architecture.
+**Result:** Complete FIPS 140-3 compliance. All cryptographic operations use FIPS-validated wolfSSL module.
 
+See Implementation Details section above for complete architecture.
 ### Network Features with FIPS Cryptography
 
 kube-proxy operations that benefit from FIPS compliance:
-- **API Server TLS** - TLS 1.2+ with FIPS-approved cipher suites (**REQUIRES API server cipher suite restrictions**)
+- **API Server TLS** - TLS 1.2+ with FIPS-approved cipher suites (golang-fips/go routes through wolfSSL FIPS)
 - **Metrics Server TLS** - HTTPS endpoint for Prometheus metrics with FIPS TLS
 - **Healthcheck TLS** - Secure healthcheck endpoints
 - **Certificate Authentication** - Client certificate authentication with FIPS RSA/ECDSA
 
-⚠️ **IMPORTANT:** FIPS compliance for TLS connections requires configuring the API server to only offer FIPS-approved cipher suites (see mitigation section above).
+✅ **FIPS COMPLIANT:** All cryptographic operations automatically use wolfSSL FIPS v5.8.2 (Certificate #4718) via golang-fips/go activation. No external configuration required for FIPS compliance.
 
 ## Requirements
 

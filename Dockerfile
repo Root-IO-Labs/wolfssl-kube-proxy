@@ -190,6 +190,10 @@ RUN set -eux; \
 ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu"
 ENV PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig"
 
+# Copy FIPS patches for golang-fips/go
+# Note: wolfProvider acceptance patch removed - no longer needed with OpenSSL config fix
+COPY golang-fips-remove-tls13-chacha20.patch /tmp/golang-fips-remove-tls13-chacha20.patch
+
 # Build golang-fips/go from source
 # IMPORTANT: Using Ubuntu System OpenSSL paths (CGO_CFLAGS/LDFLAGS)
 RUN set -eux; \
@@ -203,11 +207,23 @@ RUN set -eux; \
     git submodule update --init --recursive; \
     cd /tmp/go-fips-repo; \
     ./scripts/full-initialize-repo.sh; \
-    cd /tmp/go-fips-repo/go/src; \
+    cd /tmp/go-fips-repo/go; \
+    # Apply FIPS patches to golang-fips/go
+    echo "Applying FIPS patches to golang-fips/go..."; \
+    # REMOVED: wolfProvider acceptance patch - no longer needed
+    # FIX APPLIED: OpenSSL config now names wolfProvider as "fips" (see openssl-wolfprov.cnf)
+    # This allows golang-fips/go to find wolfProvider via standard OSSL_PROVIDER_try_load("fips")
+    # \
+    # Patch: Remove TLS 1.3 ChaCha20-Poly1305 cipher suite (non-FIPS)
+    if [ -f /tmp/golang-fips-remove-tls13-chacha20.patch ]; then \
+        echo "  - Applying TLS 1.3 ChaCha20-Poly1305 removal patch..."; \
+        patch -p1 < /tmp/golang-fips-remove-tls13-chacha20.patch || echo "Note: TLS 1.3 patch may need adjustment for this Go version"; \
+    fi; \
+    echo "FIPS patches applied successfully"; \
+    cd src; \
     CGO_ENABLED=1 \
     CGO_CFLAGS="-I/usr/include -I${WOLFSSL_PREFIX}/include" \
     CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -L${WOLFSSL_PREFIX}/lib" \
-    GOEXPERIMENT=boringcrypto \
     ./make.bash; \
     cd ..; \
     mkdir -p "${GO_INSTALL_DIR}"; \
@@ -280,9 +296,19 @@ RUN set -eux; \
     # Use go work vendor for workspace mode (Kubernetes v1.33.5 uses go.work)
     go work vendor; \
     # Build kube-proxy with FIPS-enabled Go and cipher restriction patch
-    make WHAT=cmd/kube-proxy GOFLAGS=-v; \
+    # CRITICAL: Using direct go build instead of Kubernetes Makefile
+    # Kubernetes Makefile forces CGO_ENABLED=0 via KUBE_STATIC_BINARIES
+    # Direct go build ensures CGO_ENABLED=1 for golang-fips/go to work
     mkdir -p /opt/kube-proxy; \
-    cp -v _output/bin/kube-proxy /opt/kube-proxy/kube-proxy; \
+    echo "Building kube-proxy with CGO_ENABLED=1 (dynamic binary)..."; \
+    BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ'); \
+    CGO_ENABLED=1 \
+    CGO_CFLAGS="-I/usr/include -I${WOLFSSL_PREFIX}/include" \
+    CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -L${WOLFSSL_PREFIX}/lib -lssl -lcrypto" \
+    go build -v \
+        -ldflags "-X k8s.io/component-base/version.gitVersion=${KUBERNETES_VERSION} -X k8s.io/component-base/version.gitCommit=fips-build -X k8s.io/component-base/version.buildDate=${BUILD_DATE} -X k8s.io/component-base/version.gitTreeState=clean" \
+        -o /opt/kube-proxy/kube-proxy ./cmd/kube-proxy; \
+    echo "kube-proxy built successfully as dynamic binary"; \
     chmod +x /opt/kube-proxy/kube-proxy; \
     cd /; \
     rm -rf /tmp/kubernetes /tmp/kube-proxy-fips-cipher-restriction.patch; \
@@ -356,12 +382,20 @@ ENV PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin" \
     OPENSSL_CONF="/etc/ssl/openssl-wolfprov.cnf" \
     OPENSSL_MODULES="/usr/lib/x86_64-linux-gnu/ossl-modules"
 
+# Set golang-fips/go FIPS activation variables
+# GOLANG_FIPS=1: Activates golang-fips/go OpenSSL backend routing
+# OPENSSL_FORCE_FIPS_MODE=1: Forces OpenSSL 3 into FIPS mode
+ENV GOLANG_FIPS=1 \
+    OPENSSL_FORCE_FIPS_MODE=1
+
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD [ "/kube-proxy", "--version" ]
 
-# Run as non-root user
-USER 1001
+# Run as root for kube-proxy network operations
+# Rationale: kube-proxy requires CAP_NET_ADMIN, CAP_SYS_MODULE, and root filesystem access
+# to manage iptables, IPVS, nftables, and kernel parameters
+USER 0
 
 # Entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

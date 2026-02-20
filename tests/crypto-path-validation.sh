@@ -181,8 +181,8 @@ test_check_with_output "OpenSSL version is 3.0.x" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl version'" \
     "OpenSSL 3\\.0\\."
 
-test_check_with_output "wolfProvider is loaded" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -A 5 wolfprov'" \
+test_check_with_output "FIPS provider (wolfProvider) is loaded" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -A 5 \"^\s*fips\"'" \
     "status: active"
 
 test_check "OpenSSL config file exists" \
@@ -191,8 +191,8 @@ test_check "OpenSSL config file exists" \
 test_check "wolfProvider module exists" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'test -f /usr/local/openssl/lib64/ossl-modules/libwolfprov.so || test -f /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so'"
 
-test_check "wolfProvider config in openssl.cnf" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'grep -q wolfprov /usr/local/openssl/ssl/openssl.cnf 2>/dev/null || grep -q wolfprov /etc/ssl/openssl-wolfprov.cnf'"
+test_check "FIPS provider config in openssl.cnf" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'grep -qE \"^fips\\s*=\" /usr/local/openssl/ssl/openssl.cnf 2>/dev/null || grep -qE \"^fips\\s*=\" /etc/ssl/openssl-wolfprov.cnf'"
 
 echo ""
 
@@ -271,8 +271,8 @@ test_check "Temporary directory writable" \
 test_check "CA certificates present for TLS" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'test -d /etc/ssl/certs'"
 
-test_check "OpenSSL config has wolfProvider" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'grep -q wolfprov /usr/local/openssl/ssl/openssl.cnf 2>/dev/null || grep -q wolfprov /etc/ssl/openssl-wolfprov.cnf'"
+test_check "OpenSSL config has FIPS provider" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'grep -qE \"^fips\\s*=\" /usr/local/openssl/ssl/openssl.cnf 2>/dev/null || grep -qE \"^fips\\s*=\" /etc/ssl/openssl-wolfprov.cnf'"
 
 echo ""
 

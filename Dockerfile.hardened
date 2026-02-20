@@ -208,7 +208,6 @@ RUN set -eux; \
     CGO_ENABLED=1 \
     CGO_CFLAGS="-I/usr/include -I${WOLFSSL_PREFIX}/include" \
     CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -L${WOLFSSL_PREFIX}/lib" \
-    GOEXPERIMENT=boringcrypto \
     ./make.bash; \
     cd ..; \
     mkdir -p "${GO_INSTALL_DIR}"; \

@@ -183,22 +183,22 @@ echo -e "${CYAN}[4/8] wolfProvider Compliance${NC}"
 echo "================================================================"
 echo ""
 
-check_test "wolfprov" "wolfProvider loaded" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -q wolfprov'"
+check_test "fipsprov" "FIPS provider (wolfProvider) loaded" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -qE \"^\s*fips\"'"
 
-check_test "wolfprov" "wolfProvider is active" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -A 3 wolfprov | grep -q \"status: active\"'"
+check_test "fipsprov" "FIPS provider is active" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -A 3 \"^\s*fips\" | grep -q \"status: active\"'"
 
-check_test "wolfprov" "SHA-256 available via wolfProvider" \
+check_test "fipsprov" "SHA-256 available via FIPS provider" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -digest-algorithms | grep -qi sha256'"
 
-check_test "wolfprov" "AES available via wolfProvider" \
+check_test "fipsprov" "AES available via FIPS provider" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -cipher-algorithms | grep -qi aes'"
 
-check_test "wolfprov" "FIPS startup check passes" \
+check_test "fipsprov" "FIPS startup check passes" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c '/usr/local/bin/fips-startup-check | grep -q \"FIPS VALIDATION PASSED\"'"
 
-check_test "wolfprov" "Default provider NOT active (strict FIPS)" \
+check_test "fipsprov" "Default provider NOT active (strict FIPS)" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c '! openssl list -providers | grep -A 2 \"name: default\" | grep -q \"status: active\"'"
 
 ################################################################################
@@ -225,8 +225,8 @@ check_test "nonfips" "kube-proxy doesn't link to libgcrypt" \
 check_test "nonfips" "kube-proxy doesn't link to libk5crypto" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'ldd /kube-proxy 2>/dev/null | grep -q libk5crypto && exit 1 || exit 0'"
 
-check_test "nonfips" "OpenSSL configured with wolfProvider" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers 2>/dev/null | grep -q wolfprov'"
+check_test "nonfips" "OpenSSL configured with FIPS provider (wolfProvider)" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers 2>/dev/null | grep -qE \"^\s*fips\"'"
 
 check_test "nonfips" "FIPS libraries in ldconfig cache" \
     "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'ldconfig -p | grep -q libcrypto.so.3'"

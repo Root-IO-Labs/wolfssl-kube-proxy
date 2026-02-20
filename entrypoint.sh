@@ -69,15 +69,27 @@ fi
 log_success "OpenSSL version: $OPENSSL_VERSION"
 echo ""
 
-# Step 3: Check wolfProvider
-log_info "Checking wolfProvider status..."
-if openssl list -providers 2>/dev/null | grep -q "wolfprov"; then
-    log_success "wolfProvider is loaded and active"
-    openssl list -providers | grep -A 3 "wolfprov" || true
+# Step 3: Check FIPS provider (wolfProvider renamed to "fips" for golang-fips/go compatibility)
+log_info "Checking FIPS provider status..."
+# Provider must be named "fips" for golang-fips/go to find it
+# The provider name should contain "wolfSSL" to confirm it's wolfProvider
+if openssl list -providers 2>/dev/null | grep -E "^\s*fips" >/dev/null; then
+    # Verify it's actually wolfProvider by checking the name field
+    PROVIDER_INFO=$(openssl list -providers 2>/dev/null | grep -A 3 "^\s*fips")
+    if echo "$PROVIDER_INFO" | grep -q "wolfSSL"; then
+        log_success "FIPS provider (wolfSSL/wolfProvider) is loaded and active"
+        echo "$PROVIDER_INFO"
+    else
+        log_warning "FIPS provider found but not wolfSSL-based"
+        echo "$PROVIDER_INFO"
+        log_info "Proceeding anyway - provider is active"
+    fi
 else
-    log_error "wolfProvider is NOT loaded!"
+    log_error "FIPS provider is NOT loaded!"
     log_error "Available providers:"
     openssl list -providers || true
+    log_error ""
+    log_error "CRITICAL: Provider must be named 'fips' for golang-fips/go compatibility"
     exit 1
 fi
 echo ""

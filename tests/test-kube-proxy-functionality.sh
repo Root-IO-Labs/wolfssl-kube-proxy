@@ -122,7 +122,7 @@ run_test \
 run_test \
     "Entrypoint checks wolfProvider" \
     "docker run --rm --entrypoint=/entrypoint.sh $IMAGE_NAME /bin/bash 2>&1 | head -200" \
-    "wolfProvider is loaded and active"
+    "FIPS provider.*wolfProvider.*is loaded and active"
 
 run_test \
     "Entrypoint runs FIPS integrity check" \

@@ -5,9 +5,12 @@ providers = provider_sect
 alg_section = algorithm_sect
 
 [provider_sect]
-libwolfprov = libwolfprov_sect
+# CRITICAL FIX: Provider MUST be named "fips" for golang-fips/go compatibility
+# golang-fips/go calls OSSL_PROVIDER_try_load(NULL, "fips") at initialization
+# Renaming wolfProvider from "libwolfprov" to "fips" makes it discoverable by golang-fips/go
+fips = fips_sect
 
-[libwolfprov_sect]
+[fips_sect]
 activate = 1
 module = /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so
 

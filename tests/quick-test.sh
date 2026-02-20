@@ -114,12 +114,12 @@ run_test \
     "OpenSSL 3\.0\." \
     "Expected OpenSSL 3.0.x (custom 3.0.15 or Ubuntu system 3.0.2)"
 
-# Test 2: wolfProvider loaded
+# Test 2: FIPS provider (wolfProvider) loaded
 run_test \
-    "wolfProvider loaded check" \
-    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -A 5 wolfprov'" \
+    "FIPS provider (wolfProvider) loaded check" \
+    "docker run --rm --entrypoint=/bin/bash $IMAGE_NAME -c 'openssl list -providers | grep -A 5 \"^\s*fips\"'" \
     "status: active" \
-    "wolfProvider is not active"
+    "FIPS provider is not active"
 
 # Test 3: FIPS startup check utility
 run_test \
