@@ -30,7 +30,7 @@ FIPS 140-3 Docker image for kube-proxy v1.33.5 using wolfSSL FIPS v5 (Certificat
 - ✅ golang-fips/go toolchain built and installed
 - ✅ **golang-fips/go ACTIVATED** - `GOLANG_FIPS=1` environment variable set
 - ✅ **Crypto calls route through OpenSSL** - All operations use OpenSSL → wolfProvider → wolfSSL
-- ✅ **TLS 1.3 ChaCha20-Poly1305 REMOVED** - golang-fips/go patched to eliminate non-FIPS cipher
+- ✅ **TLS 1.3 ChaCha20-Poly1305 REMOVED** - golang-fips/go source modified during build to eliminate non-FIPS cipher
 - ✅ **Runtime fully functional** - Container runs as root (UID 0) with full network capabilities
 - ✅ **CGO enabled** - Dynamic linking allows golang-fips/go to call OpenSSL
 
@@ -40,7 +40,7 @@ FIPS 140-3 Docker image for kube-proxy v1.33.5 using wolfSSL FIPS v5 (Certificat
 - ✅ FIPS Cipher Restriction: COMPLETE (TLS 1.2 & 1.3 both restricted to FIPS-only)
 
 **Current State:**
-`golang-fips/go` is ACTIVATED via `GOLANG_FIPS=1` and intercepts all `crypto/*` packages. All cryptographic operations route through OpenSSL → wolfProvider → wolfSSL FIPS v5.8.2 (Certificate #4718). The implementation has been patched to accept wolfProvider as a valid FIPS backend and TLS 1.3 ChaCha20-Poly1305 has been removed from the cipher list.
+`golang-fips/go` is ACTIVATED via `GOLANG_FIPS=1` and intercepts all `crypto/*` packages. All cryptographic operations route through OpenSSL → wolfProvider → wolfSSL FIPS v5.8.2 (Certificate #4718). OpenSSL configuration names wolfProvider as "fips" for golang-fips/go compatibility, and TLS 1.3 ChaCha20-Poly1305 has been removed from golang-fips/go source during build (client feedback from @mattia-moffa - sed-based approach instead of patch files).
 
 ### Binary Analysis Results
 
@@ -75,8 +75,8 @@ FIPS 140-3 Docker image for kube-proxy v1.33.5 using wolfSSL FIPS v5 (Certificat
 **What has been implemented:**
 - ✅ `GOLANG_FIPS=1` environment variable set - activates golang-fips/go OpenSSL backend
 - ✅ CGO enabled - kube-proxy built with dynamic linking (not static)
-- ✅ wolfProvider acceptance patch - golang-fips/go modified to recognize wolfProvider as FIPS backend
-- ✅ TLS 1.3 ChaCha20 removal - Non-FIPS cipher eliminated from golang-fips/go runtime
+- ✅ wolfProvider named "fips" in OpenSSL config - golang-fips/go recognizes it as FIPS backend
+- ✅ TLS 1.3 ChaCha20 removal - Non-FIPS cipher eliminated from golang-fips/go source during build (sed-based modification)
 - ✅ All crypto/* package calls route through: Go → OpenSSL → wolfProvider → wolfSSL FIPS v5.8.2
 
 **Validated FIPS Crypto Path:**
@@ -86,11 +86,11 @@ kube-proxy → golang-fips/go (GOLANG_FIPS=1) → OpenSSL 3 → wolfProvider →
 
 #### ✅ LEVEL 2: TLS Cipher Restrictions (Defense in Depth)
 
-**FIPS cipher restriction patch applied** for additional security layer:
+**TLS 1.3 ChaCha20-Poly1305 removed from golang-fips/go source** for additional security layer:
 
-- ✅ Restricts kube-proxy TLS client to FIPS-approved cipher suites
+- ✅ Non-FIPS cipher suite completely eliminated from TLS 1.3
 - ✅ Works in conjunction with golang-fips/go activation
-- ✅ Applied automatically during Docker build
+- ✅ Applied automatically during Docker build using sed (client feedback from @mattia-moffa)
 
 **Enforced Cipher Suites:**
 - TLS 1.2: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, TLS_RSA_WITH_AES_128_GCM_SHA256, TLS_RSA_WITH_AES_256_GCM_SHA384
@@ -330,7 +330,7 @@ docker run -d \
 
 ### Stage 4: golang-fips/go Toolchain
 - Clones golang-fips/go repository
-- Applies FIPS patches to Go standard library
+- Removes ChaCha20-Poly1305 from crypto/tls source (sed-based modification)
 - Compiles custom Go toolchain (Go 1.24)
 - Routes crypto/* to OpenSSL via CGO
 
@@ -374,8 +374,8 @@ The image undergoes multiple FIPS validation stages:
    - 131 automated checks (80 FIPS + 17 patch + 16 functional + 18 crypto routing)
    - Binary linkage verification
    - Algorithm blocking tests
-   - FIPS cipher restriction patch validation
-   - ChaCha20-Poly1305 blocking verification
+   - ChaCha20-Poly1305 removal verification
+   - TLS 1.3 FIPS-only cipher suite validation
    - Complete crypto path validation
    - Network proxy functionality tests
 
@@ -388,16 +388,16 @@ The following non-FIPS cryptographic libraries are **completely removed**:
 - libgcrypt (`libgcrypt20`)
 - Kerberos crypto (`libk5crypto3`)
 
-Combined with the FIPS cipher restriction patch, this ensures **complete FIPS 140-3 compliance** with no executable bypass paths.
+Combined with ChaCha20-Poly1305 source removal, this ensures **complete FIPS 140-3 compliance** with no executable bypass paths.
 
 ## Configuration
 
 ### Environment Variables
 
 #### FIPS Configuration
-- `OPENSSL_CONF` - Path to OpenSSL config (default: `/usr/local/openssl/ssl/openssl.cnf`)
-- `OPENSSL_MODULES` - OpenSSL modules directory (default: `/usr/local/openssl/lib64/ossl-modules`)
-- `LD_LIBRARY_PATH` - Includes FIPS OpenSSL and wolfSSL paths
+- `OPENSSL_CONF` - Path to OpenSSL config (default: `/etc/ssl/openssl-wolfprov.cnf` - Ubuntu System OpenSSL)
+- `LD_LIBRARY_PATH` - Includes system OpenSSL and wolfSSL paths
+- Note: `OPENSSL_MODULES` not needed for Ubuntu System OpenSSL (uses default `/usr/lib/x86_64-linux-gnu/ossl-modules`)
 
 #### kube-proxy Configuration
 kube-proxy is configured via ConfigMap or command-line flags.

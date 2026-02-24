@@ -204,7 +204,38 @@ RUN set -eux; \
     git submodule update --init --recursive; \
     cd /tmp/go-fips-repo; \
     ./scripts/full-initialize-repo.sh; \
-    cd /tmp/go-fips-repo/go/src; \
+    cd /tmp/go-fips-repo/go; \
+    # Apply FIPS patches to golang-fips/go
+    echo "Applying FIPS compliance modifications to golang-fips/go..."; \
+    # REMOVED: wolfProvider acceptance patch - no longer needed
+    # FIX APPLIED: OpenSSL config now names wolfProvider as "fips" (see openssl-wolfprov.cnf)
+    # This allows golang-fips/go to find wolfProvider via standard OSSL_PROVIDER_try_load("fips")
+    # \
+    # CRITICAL FIX: Remove TLS 1.3 ChaCha20-Poly1305 cipher suite (non-FIPS algorithm)
+    # Client Feedback (@mattia-moffa): Patch file approach was problematic - applied to golang-fips/go
+    # after golang-fips patches modified cipher_suites.go, causing context mismatch and silent failures.
+    # Solution: Use sed to directly remove ALL ChaCha20 references from crypto/tls.
+    echo "  - Removing TLS 1.3 ChaCha20-Poly1305 (non-FIPS) from crypto/tls..."; \
+    cd src/crypto/tls; \
+    # Remove ChaCha20 from all files in crypto/tls directory
+    # This handles cipher_suites.go, defaults.go, and any other files referencing it
+    for file in *.go; do \
+        if [ -f "$file" ]; then \
+            # Remove lines containing TLS_CHACHA20_POLY1305_SHA256
+            sed -i '/TLS_CHACHA20_POLY1305_SHA256/d' "$file"; \
+        fi; \
+    done; \
+    cd ../../..; \
+    # Verify removal was successful by checking all files
+    if grep -r "TLS_CHACHA20_POLY1305_SHA256" src/crypto/tls/ 2>/dev/null; then \
+        echo "ERROR: Failed to remove all ChaCha20-Poly1305 references!"; \
+        grep -rn "TLS_CHACHA20_POLY1305_SHA256" src/crypto/tls/ || true; \
+        exit 1; \
+    fi; \
+    echo "  ✓ ChaCha20-Poly1305 successfully removed from all crypto/tls files"; \
+    echo "  ✓ TLS 1.3 will only use FIPS-approved AES-GCM cipher suites"; \
+    echo "FIPS modifications applied successfully"; \
+    cd src; \
     CGO_ENABLED=1 \
     CGO_CFLAGS="-I/usr/include -I${WOLFSSL_PREFIX}/include" \
     CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -L${WOLFSSL_PREFIX}/lib" \

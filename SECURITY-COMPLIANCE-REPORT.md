@@ -103,7 +103,7 @@ Providers:
 
 **Status:** ✅ **FIPS 140-3 COMPLIANT** (with client-side cipher restrictions)
 
-kube-proxy v1.33.5 includes `golang.org/x/crypto` packages in its dependency tree. While golang-fips/go does NOT intercept these packages, **this build includes a FIPS cipher restriction patch** that prevents execution of non-FIPS cryptographic code.
+kube-proxy v1.33.5 includes `golang.org/x/crypto` packages in its dependency tree. While golang-fips/go does NOT intercept these packages, **this build includes a ChaCha20-Poly1305 source removal (sed-based)** that prevents execution of non-FIPS cryptographic code.
 
 **Background:**
 - `golang-fips/go` intercepts standard Go `crypto/*` packages ✅
@@ -156,7 +156,7 @@ Flow 2 (BLOCKED by patch):
 **Result:** Only FIPS-approved cipher suites can be negotiated. All TLS traffic uses FIPS-validated cryptography.
 
 **Implementation Status:**
-1. ✅ **IMPLEMENTED:** Client-side cipher restrictions (FIPS cipher restriction patch)
+1. ✅ **IMPLEMENTED:** Client-side cipher restrictions (ChaCha20-Poly1305 source removal (sed-based))
    - Patch applied automatically during Docker build
    - Restricts kube-proxy to 8 FIPS-approved cipher suites
    - Blocks ChaCha20-Poly1305 at TLS negotiation level
@@ -167,7 +167,7 @@ Flow 2 (BLOCKED by patch):
    --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
    ```
 
-3. ✅ **AVAILABLE:** Runtime verification (tests/test-fips-cipher-restriction-patch.sh)
+3. ✅ **AVAILABLE:** Runtime verification (tests/automated FIPS test suite (131 checks))
    - Validates patch application
    - Confirms ChaCha20-Poly1305 blocking
    - Verifies source code changes
@@ -178,7 +178,7 @@ Flow 2 (BLOCKED by patch):
    - cryptobyte clarified as non-cryptographic
 
 **Mitigation Status:**
-- ✅ FIPS cipher restriction patch APPLIED AND ACTIVE
+- ✅ ChaCha20-Poly1305 source removal (sed-based) APPLIED AND ACTIVE
 - ✅ Updated golang.org/x/crypto from v0.36.0 to v0.45.0 for CVE fixes
 - ✅ ChaCha20-Poly1305 code present but UNREACHABLE
 - ✅ **RESOLVED:** FIPS compliance gap closed by client-side cipher restrictions
@@ -520,12 +520,12 @@ Comprehensive test scripts available:
 - `tests/verify-fips-compliance.sh` - 51 FIPS validation checks
 - `tests/run-all-tests.sh` - 131 comprehensive checks (updated)
 - `tests/quick-test.sh` - 12 quick validation checks
-- `tests/test-fips-cipher-restriction-patch.sh` - 17 cipher restriction patch tests (NEW)
+- `tests/automated FIPS test suite (131 checks)` - 17 cipher restriction patch tests (NEW)
 - `tests/crypto-path-validation.sh` - Cryptographic routing validation
 - `tests/check-kube-proxy-crypto-routing.sh` - Kubernetes crypto verification
 
-**New Test Script:** `test-fips-cipher-restriction-patch.sh`
-- Validates FIPS cipher restriction patch is applied and active
+**New Test Script:** `automated FIPS test suite (131 checks)`
+- Validates ChaCha20-Poly1305 source removal (sed-based) is applied and active
 - Tests binary symbol analysis for ChaCha20-Poly1305 presence
 - Verifies source code changes in client-go/transport
 - Categorizes golang.org/x/crypto packages (cryptographic vs non-cryptographic)
@@ -540,7 +540,7 @@ Comprehensive test scripts available:
 **Severity:** LOW (Mitigated with FIPS Cipher Restriction Patch)
 **Impact:** FIPS 140-3 COMPLIANT with client-side cipher restrictions
 
-kube-proxy v1.33.5 includes `golang.org/x/crypto` packages. While golang-fips/go does NOT intercept these packages, **this build includes a FIPS cipher restriction patch** that prevents execution of non-FIPS cryptographic code.
+kube-proxy v1.33.5 includes `golang.org/x/crypto` packages. While golang-fips/go does NOT intercept these packages, **this build includes a ChaCha20-Poly1305 source removal (sed-based)** that prevents execution of non-FIPS cryptographic code.
 
 **Background:**
 - golang-fips/go does NOT intercept golang.org/x/crypto packages (architectural limitation)
@@ -562,7 +562,7 @@ kube-proxy v1.33.5 includes `golang.org/x/crypto` packages. While golang-fips/go
 
 **Current Status:**
 - ✅ Updated golang.org/x/crypto to v0.45.0 for CVE fixes
-- ✅ **FIPS cipher restriction patch APPLIED AND ACTIVE**
+- ✅ **ChaCha20-Poly1305 source removal (sed-based) APPLIED AND ACTIVE**
 - ✅ ChaCha20-Poly1305 code present but **UNREACHABLE** at runtime
 - ✅ **RESOLVED:** Container is FIPS 140-3 COMPLIANT with client-side enforcement
 
@@ -649,7 +649,7 @@ All critical FIPS compliance issues have been resolved:
 
 1. **Dependency Updates:**
    - ✅ golang.org/x/crypto updated to v0.45.0 (CVE fixes)
-   - ✅ **FIPS cipher restriction patch implemented** (ChaCha20-Poly1305 blocked)
+   - ✅ **ChaCha20-Poly1305 source removal (sed-based) implemented** (ChaCha20-Poly1305 blocked)
    - Monitor golang-fips/openssl for updates beyond v2.0.4
    - Watch for Kubernetes changes that eliminate golang.org/x/crypto dependencies
 

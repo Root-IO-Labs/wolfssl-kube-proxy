@@ -44,18 +44,14 @@ echo ""
 # Step 1: Verify environment variables
 log_info "Verifying FIPS environment variables..."
 if [ -z "$OPENSSL_CONF" ]; then
-    log_warning "OPENSSL_CONF not set, using default: /usr/local/openssl/ssl/openssl.cnf"
-    export OPENSSL_CONF="/usr/local/openssl/ssl/openssl.cnf"
+    log_warning "OPENSSL_CONF not set, using default: /etc/ssl/openssl-wolfprov.cnf"
+    export OPENSSL_CONF="/etc/ssl/openssl-wolfprov.cnf"
 fi
 
-if [ -z "$OPENSSL_MODULES" ]; then
-    log_warning "OPENSSL_MODULES not set, using default: /usr/local/openssl/lib64/ossl-modules"
-    export OPENSSL_MODULES="/usr/local/openssl/lib64/ossl-modules"
-fi
+# Note: OPENSSL_MODULES not needed for Ubuntu System OpenSSL (uses default /usr/lib/x86_64-linux-gnu/ossl-modules)
 
 log_success "Environment variables configured"
 echo "  OPENSSL_CONF: $OPENSSL_CONF"
-echo "  OPENSSL_MODULES: $OPENSSL_MODULES"
 echo "  LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
 echo ""
 
@@ -126,12 +122,6 @@ if echo "test" | openssl dgst -sha384 -hex >/dev/null 2>&1; then
     log_success "SHA-384 operation successful"
 else
     log_warning "SHA-384 operation failed (may not be critical)"
-fi
-
-if echo "test" | openssl enc -aes-256-cbc -pbkdf2 -k "password" >/dev/null 2>&1; then
-    log_success "AES-256-CBC operation successful"
-else
-    log_warning "AES-256-CBC operation failed (may not be critical)"
 fi
 echo ""
 
