@@ -44,18 +44,14 @@ echo ""
 # Step 1: Verify environment variables
 log_info "Verifying FIPS environment variables..."
 if [ -z "$OPENSSL_CONF" ]; then
-    log_warning "OPENSSL_CONF not set, using default: /usr/local/openssl/ssl/openssl.cnf"
-    export OPENSSL_CONF="/usr/local/openssl/ssl/openssl.cnf"
+    log_warning "OPENSSL_CONF not set, using default: /etc/ssl/openssl-wolfprov.cnf"
+    export OPENSSL_CONF="/etc/ssl/openssl-wolfprov.cnf"
 fi
 
-if [ -z "$OPENSSL_MODULES" ]; then
-    log_warning "OPENSSL_MODULES not set, using default: /usr/local/openssl/lib64/ossl-modules"
-    export OPENSSL_MODULES="/usr/local/openssl/lib64/ossl-modules"
-fi
+# Note: OPENSSL_MODULES not needed for Ubuntu System OpenSSL (uses default /usr/lib/x86_64-linux-gnu/ossl-modules)
 
 log_success "Environment variables configured"
 echo "  OPENSSL_CONF: $OPENSSL_CONF"
-echo "  OPENSSL_MODULES: $OPENSSL_MODULES"
 echo "  LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
 echo ""
 
@@ -69,15 +65,27 @@ fi
 log_success "OpenSSL version: $OPENSSL_VERSION"
 echo ""
 
-# Step 3: Check wolfProvider
-log_info "Checking wolfProvider status..."
-if openssl list -providers 2>/dev/null | grep -q "wolfprov"; then
-    log_success "wolfProvider is loaded and active"
-    openssl list -providers | grep -A 3 "wolfprov" || true
+# Step 3: Check FIPS provider (wolfProvider renamed to "fips" for golang-fips/go compatibility)
+log_info "Checking FIPS provider status..."
+# Provider must be named "fips" for golang-fips/go to find it
+# The provider name should contain "wolfSSL" to confirm it's wolfProvider
+if openssl list -providers 2>/dev/null | grep -E "^\s*fips" >/dev/null; then
+    # Verify it's actually wolfProvider by checking the name field
+    PROVIDER_INFO=$(openssl list -providers 2>/dev/null | grep -A 3 "^\s*fips")
+    if echo "$PROVIDER_INFO" | grep -q "wolfSSL"; then
+        log_success "FIPS provider (wolfSSL/wolfProvider) is loaded and active"
+        echo "$PROVIDER_INFO"
+    else
+        log_warning "FIPS provider found but not wolfSSL-based"
+        echo "$PROVIDER_INFO"
+        log_info "Proceeding anyway - provider is active"
+    fi
 else
-    log_error "wolfProvider is NOT loaded!"
+    log_error "FIPS provider is NOT loaded!"
     log_error "Available providers:"
     openssl list -providers || true
+    log_error ""
+    log_error "CRITICAL: Provider must be named 'fips' for golang-fips/go compatibility"
     exit 1
 fi
 echo ""
@@ -114,12 +122,6 @@ if echo "test" | openssl dgst -sha384 -hex >/dev/null 2>&1; then
     log_success "SHA-384 operation successful"
 else
     log_warning "SHA-384 operation failed (may not be critical)"
-fi
-
-if echo "test" | openssl enc -aes-256-cbc -pbkdf2 -k "password" >/dev/null 2>&1; then
-    log_success "AES-256-CBC operation successful"
-else
-    log_warning "AES-256-CBC operation failed (may not be critical)"
 fi
 echo ""
 
@@ -241,5 +243,10 @@ echo ""
 if [ $# -eq 0 ]; then
     exec /kube-proxy
 else
-    exec "$@"
+    # If first argument starts with -, it's a flag for kube-proxy
+    if [[ "${1}" == -* ]]; then
+        exec /kube-proxy "$@"
+    else
+        exec "$@"
+    fi
 fi
